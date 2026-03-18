@@ -357,11 +357,18 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
           
           if (isSelected) {
             if (!child.userData.originalMaterial) {
-              child.userData.originalMaterial = child.material.clone()
+              child.userData.originalMaterial = child.material
             }
-            child.material = child.userData.originalMaterial.clone()
-            child.material.emissive = new THREE.Color('#3b82f6')
-            child.material.emissiveIntensity = 0.5
+            // Completely replace material for guaranteed color change
+            child.material = new THREE.MeshStandardMaterial({
+              color: '#3b82f6', // bright blue
+              emissive: '#1d4ed8', // deeper blue glow
+              emissiveIntensity: 0.8,
+              metalness: 0.2,
+              roughness: 0.1,
+              transparent: true,
+              opacity: 0.9
+            })
           } else if (child.userData.originalMaterial) {
             child.material = child.userData.originalMaterial
           }
@@ -371,7 +378,7 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
   }, [selectedComponent, scene])
 
   return (
-    <group ref={groupRef}>
+    <group ref={groupRef} position={[0, 0.8, 0]}>
       <primitive 
         object={scene} 
         onClick={handleClick}
