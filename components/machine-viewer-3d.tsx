@@ -1,8 +1,8 @@
 'use client'
 
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useMemo } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { OrbitControls, Html, Environment, Float } from '@react-three/drei'
+import { OrbitControls, Html, Environment, Float, useGLTF, useAnimations } from '@react-three/drei'
 import { Machine, MachineComponent } from '@/lib/data'
 import * as THREE from 'three'
 import { Button } from '@/components/ui/button'
@@ -110,9 +110,10 @@ export function MachineViewer3D({
         <pointLight position={[10, 10, 10]} intensity={0.8} />
         <pointLight position={[-10, -10, -10]} intensity={0.3} />
         
-        <MachineModel
+        <MachineGLTFModel
           machine={machine}
           isExploded={isExploded}
+          setIsExploded={setIsExploded}
           onComponentSelect={onComponentSelect}
           selectedComponent={selectedComponent}
         />
@@ -233,179 +234,159 @@ function FleetModel({ machines, onMachineSelect }: FleetModelProps) {
   )
 }
 
-interface MachineModelProps {
+interface MachineGLTFModelProps {
   machine: Machine
   isExploded: boolean
+  setIsExploded: (v: boolean) => void
   onComponentSelect: (component: MachineComponent | null) => void
   selectedComponent: MachineComponent | null
 }
 
-function MachineModel({ machine, isExploded, onComponentSelect, selectedComponent }: MachineModelProps) {
+function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelect, selectedComponent }: MachineGLTFModelProps) {
   const groupRef = useRef<THREE.Group>(null)
   
-  useFrame((state) => {
+  // Dynamic model mapping
+  const modelUrl = useMemo(() => {
+    if (machine.id === 'machine-1') return '/models/machine1.glb'
+    if (machine.id === 'machine-2') return '/models/machine2.glb'
+    if (machine.id === 'machine-3') return '/models/machine3.glb'
+    return '/models/machine1.glb' // Fallback
+  }, [machine.id])
+
+  const { scene, animations } = useGLTF(modelUrl)
+  const { actions, names } = useAnimations(animations, groupRef)
+
+  // Auto rotation when assembled
+  useFrame((state, delta) => {
     if (groupRef.current && !isExploded) {
-      groupRef.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.3) * 0.1
+      groupRef.current.rotation.y += delta * 0.2
     }
   })
 
-  const getComponentColor = (component: MachineComponent) => {
-    // Highlight selected component
-    if (selectedComponent?.id === component.id) {
-      return '#3b82f6' // primary blue for selected
+  // Animation handling
+  useEffect(() => {
+    if (names.length > 0) {
+      const action = actions[names[0]]
+      if (action) {
+        if (isExploded) {
+          action.paused = false
+          action.timeScale = 1
+          action.setLoop(THREE.LoopOnce, 1)
+          action.clampWhenFinished = true
+          action.play()
+        } else {
+          if (action.time > 0) {
+            action.paused = false
+            action.timeScale = -1
+            action.setLoop(THREE.LoopOnce, 1)
+            action.clampWhenFinished = true
+            action.play()
+          } else {
+            action.stop()
+          }
+        }
+      }
     }
+  }, [isExploded, actions, names])
+
+  // Center and scale the model so it fits
+  useEffect(() => {
+    if (scene) {
+      // Create a bounding box to find the center
+      const box = new THREE.Box3().setFromObject(scene)
+      const center = box.getCenter(new THREE.Vector3())
+      const size = box.getSize(new THREE.Vector3())
+      
+      const maxDim = Math.max(size.x, size.y, size.z)
+      const scale = 2.5 / maxDim // Normalize scale to fit viewer
+      
+      scene.position.x = -center.x
+      scene.position.y = -center.y
+      scene.position.z = -center.z
+      
+      scene.scale.set(scale, scale, scale)
+    }
+  }, [scene])
+
+  // Click handling
+  const handleClick = (e: any) => {
+    e.stopPropagation()
     
-    // Color based on health status
-    switch (component.status) {
-      case 'healthy':
-        return '#22c55e' // green
-      case 'degraded':
-        return '#eab308' // yellow/amber
-      case 'failing':
-        return '#f97316' // orange
-      case 'failed':
-        return '#ef4444' // red
+    // Auto-explode on click if not exploded
+    if (!isExploded) {
+      setIsExploded(true)
+    }
+
+    const clickedMeshName = e.object.name || ''
+    
+    // Try to find matching component
+    const matched = machine.components.find(c => 
+      clickedMeshName.toLowerCase().includes(c.name.toLowerCase()) || 
+      c.name.toLowerCase().includes(clickedMeshName.toLowerCase())
+    )
+
+    if (matched) {
+      onComponentSelect(matched)
+    } else {
+      // Display dummy component for unknown parts
+      onComponentSelect({
+        id: e.object.uuid,
+        name: clickedMeshName || 'Machine Part',
+        status: 'healthy',
+        health: 100,
+        lastMaintenance: new Date().toISOString(),
+        predictedFailure: null,
+        position: [0, 0, 0],
+        repairTime: 1,
+        replacementCost: 100,
+        contributionToRUL: 0
+      })
     }
   }
 
-  const getExplodedOffset = (position: [number, number, number], index: number): [number, number, number] => {
-    if (!isExploded) return position
-    const multiplier = 1.8
-    return [
-      position[0] * multiplier + (index % 2 === 0 ? 0.5 : -0.5),
-      position[1] * multiplier,
-      position[2] * multiplier + (index % 3 === 0 ? 0.3 : -0.3)
-    ]
-  }
+  // Highlight selected component
+  useEffect(() => {
+    if (scene) {
+      scene.traverse((child: any) => {
+        if (child.isMesh) {
+          const isSelected = selectedComponent && (
+            child.name.toLowerCase().includes(selectedComponent.name.toLowerCase()) ||
+            selectedComponent.name.toLowerCase().includes(child.name.toLowerCase()) ||
+            child.uuid === selectedComponent.id
+          )
+          
+          if (isSelected) {
+            if (!child.userData.originalMaterial) {
+              child.userData.originalMaterial = child.material.clone()
+            }
+            child.material = child.userData.originalMaterial.clone()
+            child.material.emissive = new THREE.Color('#3b82f6')
+            child.material.emissiveIntensity = 0.5
+          } else if (child.userData.originalMaterial) {
+            child.material = child.userData.originalMaterial
+          }
+        }
+      })
+    }
+  }, [selectedComponent, scene])
 
   return (
     <group ref={groupRef}>
-      {/* Base platform */}
-      <mesh position={[0, -0.8, 0]} receiveShadow>
-        <cylinderGeometry args={[1.2, 1.4, 0.15, 32]} />
-        <meshStandardMaterial color="#1e293b" metalness={0.8} roughness={0.2} />
-      </mesh>
-
-      {/* Machine housing */}
-      <mesh position={[0, 0, 0]} castShadow>
-        <boxGeometry args={[1.5, 1.2, 1]} />
-        <meshStandardMaterial 
-          color="#374151" 
-          metalness={0.6} 
-          roughness={0.3}
-          transparent
-          opacity={0.3}
-        />
-      </mesh>
-
-      {/* Components */}
-      {machine.components.map((component, index) => {
-        const position = getExplodedOffset(component.position, index)
-        const isSelected = selectedComponent?.id === component.id
-        const isProblem = component.status === 'failing' || component.status === 'failed'
-        
-        return (
-          <Float
-            key={component.id}
-            speed={isProblem ? 4 : 0}
-            rotationIntensity={isProblem ? 0.2 : 0}
-            floatIntensity={isProblem ? 0.3 : 0}
-          >
-            <group position={position}>
-              <mesh
-                castShadow
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onComponentSelect(component)
-                }}
-                onPointerOver={(e) => {
-                  e.stopPropagation()
-                  document.body.style.cursor = 'pointer'
-                }}
-                onPointerOut={() => {
-                  document.body.style.cursor = 'default'
-                }}
-              >
-                <ComponentGeometry type={component.name} />
-                <meshStandardMaterial
-                  color={getComponentColor(component)}
-                  metalness={0.5}
-                  roughness={0.4}
-                  emissive={isProblem ? getComponentColor(component) : '#000000'}
-                  emissiveIntensity={isProblem ? 0.3 : 0}
-                />
-              </mesh>
-
-              {/* Label on hover/select */}
-              {(isSelected || isExploded) && (
-                <Html
-                  position={[0, 0.4, 0]}
-                  center
-                  distanceFactor={8}
-                  style={{ pointerEvents: 'none' }}
-                >
-                  <div className="bg-card/95 backdrop-blur-sm px-2 py-1 rounded text-xs whitespace-nowrap border border-border">
-                    <div className="font-medium">{component.name}</div>
-                    <div className="text-muted-foreground">
-                      Health: <span className={
-                        component.health >= 80 ? 'text-success' :
-                        component.health >= 60 ? 'text-warning' :
-                        'text-destructive'
-                      }>{component.health}%</span>
-                    </div>
-                  </div>
-                </Html>
-              )}
-            </group>
-          </Float>
-        )
-      })}
+      <primitive 
+        object={scene} 
+        onClick={handleClick}
+        onPointerOver={(e: any) => {
+          e.stopPropagation()
+          document.body.style.cursor = 'pointer'
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = 'default'
+        }}
+      />
     </group>
   )
 }
 
-function ComponentGeometry({ type }: { type: string }) {
-  // Different geometries for different component types
-  if (type.includes('Motor') || type.includes('Drive')) {
-    return <cylinderGeometry args={[0.2, 0.2, 0.4, 16]} />
-  }
-  if (type.includes('Bearing') || type.includes('Roller')) {
-    return <torusGeometry args={[0.15, 0.05, 8, 24]} />
-  }
-  if (type.includes('Belt') || type.includes('Chain')) {
-    return <torusGeometry args={[0.2, 0.03, 6, 32]} />
-  }
-  if (type.includes('Cylinder') || type.includes('Chamber')) {
-    return <cylinderGeometry args={[0.15, 0.15, 0.5, 16]} />
-  }
-  if (type.includes('Valve') || type.includes('Pump')) {
-    return <boxGeometry args={[0.25, 0.2, 0.25]} />
-  }
-  if (type.includes('Sensor') || type.includes('Control')) {
-    return <boxGeometry args={[0.12, 0.08, 0.12]} />
-  }
-  if (type.includes('Seal')) {
-    return <torusGeometry args={[0.1, 0.03, 8, 24]} />
-  }
-  if (type.includes('Impeller') || type.includes('Fan')) {
-    return <coneGeometry args={[0.18, 0.25, 6]} />
-  }
-  if (type.includes('Spindle') || type.includes('Screw')) {
-    return <cylinderGeometry args={[0.08, 0.08, 0.6, 8]} />
-  }
-  if (type.includes('Guide') || type.includes('Linear')) {
-    return <boxGeometry args={[0.4, 0.08, 0.08]} />
-  }
-  if (type.includes('Changer') || type.includes('Tool')) {
-    return <boxGeometry args={[0.2, 0.15, 0.2]} />
-  }
-  if (type.includes('Cooling') || type.includes('Radiator')) {
-    return <boxGeometry args={[0.3, 0.25, 0.1]} />
-  }
-  if (type.includes('Tensioner')) {
-    return <sphereGeometry args={[0.1, 16, 16]} />
-  }
-  
-  // Default box
-  return <boxGeometry args={[0.2, 0.2, 0.2]} />
-}
+useGLTF.preload('/models/machine1.glb')
+useGLTF.preload('/models/machine2.glb')
+useGLTF.preload('/models/machine3.glb')
