@@ -684,7 +684,7 @@ export default function DigitalTwinDashboard() {
                         <CardTitle className="text-sm">Live Sensor Feed</CardTitle>
                       </CardHeader>
                       <CardContent>
-                        <SensorCharts data={selectedMachine.sensorHistory} />
+                        <SensorCharts machineId={selectedMachine.id} />
                       </CardContent>
                     </Card>
 
