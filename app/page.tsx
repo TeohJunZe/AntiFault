@@ -24,7 +24,7 @@ import { MaintenancePlanner } from '@/components/maintenance-planner'
 import { SimulationPanel } from '@/components/simulation-panel'
 import { TechnologySuggestions } from '@/components/technology-suggestions'
 import { AIAssistant } from '@/components/ai-assistant'
-import { MaintenanceOverview } from '@/components/maintenance-overview'
+import { MaintenanceBoard } from '@/components/maintenance-board'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -534,12 +534,9 @@ export default function DigitalTwinDashboard() {
                 </TabsContent>
 
                 <TabsContent value="maintenance" className="mt-0">
-                  <MaintenanceOverview
+                  <MaintenanceBoard
                     machines={activeMachines}
                     onMachineSelect={handleSelectMachine}
-                    onScheduleMaintenance={handleScheduleMaintenance}
-                    focusedMachineId={focusedMachineId}
-                    focusedAlertMessage={focusedAlertMessage}
                   />
                 </TabsContent>
               </Tabs>
