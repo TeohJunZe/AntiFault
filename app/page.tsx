@@ -527,12 +527,6 @@ export default function DigitalTwinDashboard() {
 
                   {/* Simulation Panel for Fleet */}
                   <Card className="mt-6">
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <Play className="w-4 h-4 text-primary" />
-                        Delay Impact Simulator
-                      </CardTitle>
-                    </CardHeader>
                     <CardContent>
                       <SimulationPanel machine={null} machines={activeMachines} isFleetView={true} />
                     </CardContent>
