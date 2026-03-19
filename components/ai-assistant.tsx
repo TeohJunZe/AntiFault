@@ -1,25 +1,21 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Bot,
   Mic,
-  MicOff,
   Send,
-  Volume2,
-  VolumeX,
   X,
   MessageSquare,
-  FileText,
   AlertTriangle,
-  Wrench,
-  TrendingUp
+  FileText,
+  Sparkles
 } from 'lucide-react'
 import { Machine, Alert, MaintenanceTask } from '@/lib/data'
+import { Switch } from '@/components/ui/switch'
+import { useNeoHUD } from '@/components/hud/NeoHUDContext'
 
 interface AIAssistantProps {
   machines: Machine[]
@@ -36,269 +32,322 @@ export function AIAssistant({
   selectedMachine,
   onClose
 }: AIAssistantProps) {
+  const { 
+    setNeoState, 
+    contextMemory, 
+    setContextMemory,
+    setActiveContextData,
+    setActiveUIModules 
+  } = useNeoHUD();
+
   const [input, setInput] = useState('')
-  const [isListening, setIsListening] = useState(false)
-  const [isSpeaking, setIsSpeaking] = useState(true)
+  const [activeTab, setActiveTab] = useState<'qa' | 'alerts' | 'reports'>('qa')
+  const [heyNeoEnabled, setHeyNeoEnabled] = useState(false)
+  
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const recognitionRef = useRef<any>(null)
 
-  const { messages, sendMessage, status } = useChat({
-    transport: new DefaultChatTransport({ api: '/api/assistant' }),
-  })
-
-  const isLoading = status === 'streaming' || status === 'submitted'
+  type Message = { role: 'user'|'assistant', content: string };
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Text-to-speech for responses
-  useEffect(() => {
-    if (isSpeaking && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1]
-      if (lastMessage.role === 'assistant' && status === 'ready') {
-        const text = lastMessage.parts
-          ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-          .map(p => p.text)
-          .join('') || ''
-        
-        if (text && 'speechSynthesis' in window) {
-          const utterance = new SpeechSynthesisUtterance(text)
-          utterance.rate = 1
-          utterance.pitch = 1
-          speechSynthesis.speak(utterance)
-        }
-      }
-    }
-  }, [messages, status, isSpeaking])
+  const handleSubmit = async (e: React.FormEvent | null, textOverride?: string) => {
+    if (e) e.preventDefault();
+    const submitText = textOverride || input;
+    if (!submitText.trim() || isProcessing) return;
+    
+    setInput('');
+    setIsProcessing(true);
+    setNeoState('processing');
 
-  // Voice recognition
-  const toggleListening = () => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      if (isListening) {
-        recognitionRef.current?.stop()
-        setIsListening(false)
+    // 1. Add User Msg
+    setMessages(prev => [...prev, { role: 'user', content: submitText }]);
+
+    try {
+      // 2. Intent Parsing pipeline
+      const { parseIntent, updateContext, resolveData, mapIntentToUI } = await import('@/lib/neo-engine');
+      const intentOutput = await parseIntent(submitText, contextMemory);
+      const newMemory = updateContext(intentOutput, contextMemory);
+      setContextMemory(newMemory);
+
+      // 3. Resolve Data & Map UI
+      const resolvedData = resolveData(intentOutput, machines);
+      setActiveContextData(resolvedData);
+      
+      const uiModules = mapIntentToUI(intentOutput, resolvedData);
+      setActiveUIModules(uiModules);
+      
+      // Update core state based on findings
+      if (uiModules.includes('ERROR_PANEL')) {
+         setNeoState('idle');
+      } else if (uiModules.includes('ALERT_PANEL')) {
+         setNeoState('alert');
       } else {
-        const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition
-        recognitionRef.current = new SpeechRecognition()
-        recognitionRef.current.continuous = false
-        recognitionRef.current.interimResults = false
-
-        recognitionRef.current.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript
-          setInput(transcript)
-          setIsListening(false)
-        }
-
-        recognitionRef.current.onerror = () => {
-          setIsListening(false)
-        }
-
-        recognitionRef.current.onend = () => {
-          setIsListening(false)
-        }
-
-        recognitionRef.current.start()
-        setIsListening(true)
+         setNeoState('idle'); // or 'speaking' once voice starts
       }
+
+      // 4. Stream Response from API
+      const res = await fetch('/api/neo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: submitText, currentContext: newMemory.history.map(m => m.machine).join(', ') })
+      });
+
+      if (!res.body || !res.ok) throw new Error("Failed connecting to Neo API");
+      
+      setNeoState('speaking');
+      
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantContent = '';
+      
+      // Start an empty message
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+      let sentenceBuffer = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value);
+        assistantContent += chunk;
+        sentenceBuffer += chunk;
+        
+        // Update UI
+        setMessages(prev => {
+          const newArr = [...prev];
+          newArr[newArr.length - 1].content = assistantContent;
+          return newArr;
+        });
+
+        // Speech Synthesis by sentences
+        if (sentenceBuffer.includes('.') || sentenceBuffer.includes('!') || sentenceBuffer.includes('?')) {
+            const ends = sentenceBuffer.match(/.*?[.!?](\s|$)/);
+            if (ends && ends[0] && 'speechSynthesis' in window) {
+               const utterance = new SpeechSynthesisUtterance(ends[0].trim());
+               window.speechSynthesis.speak(utterance);
+               sentenceBuffer = sentenceBuffer.replace(ends[0], '');
+            }
+        }
+      }
+
+      // Speak remaining buffer
+      if (sentenceBuffer.trim() && 'speechSynthesis' in window) {
+         window.speechSynthesis.speak(new SpeechSynthesisUtterance(sentenceBuffer.trim()));
+      }
+      
+      // Cleanup visual state if not permanently alert
+      if (uiModules.includes('ALERT_PANEL')) {
+          setNeoState('alert');
+      } else {
+          setNeoState('idle');
+      }
+
+    } catch(err) {
+       console.error(err);
+       setMessages(prev => [...prev, { role: 'assistant', content: "I encountered a processing error. Please check system logs." }]);
+       setNeoState('idle');
+    } finally {
+       setIsProcessing(false);
     }
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!input.trim() || isLoading) return
-
-    // Add context about current state
-    const context = `
-[Current Context]
-${selectedMachine ? `Selected Machine: ${selectedMachine.name} (Health: ${selectedMachine.healthIndex}%, RUL: ${selectedMachine.rul} days, Status: ${selectedMachine.status})` : 'No machine selected'}
-Critical Alerts: ${alerts.filter(a => a.severity === 'critical' && !a.acknowledged).length}
-Overdue Tasks: ${tasks.filter(t => t.status === 'overdue').length}
-Fleet Health: ${Math.round(machines.reduce((sum, m) => sum + m.healthIndex, 0) / machines.length)}%
-
-[User Question]
-${input}
-`
-    sendMessage({ text: context })
-    setInput('')
-  }
-
-  // Quick actions
-  const quickActions = [
-    { label: 'Generate Report', icon: FileText, prompt: 'Generate a maintenance status report for all machines' },
-    { label: 'Critical Issues', icon: AlertTriangle, prompt: 'What are the critical issues that need immediate attention?' },
-    { label: 'Schedule Help', icon: Wrench, prompt: 'Help me optimize the maintenance schedule for this week' },
-    { label: 'Performance Analysis', icon: TrendingUp, prompt: 'Analyze the overall fleet performance and give recommendations' },
+  const suggestedQueries = [
+    "Show urgent issues",
+    "Why is Press-02 at risk?",
+    "Summarize report"
   ]
 
-  const getMessageText = (message: any) => {
-    return message.parts
-      ?.filter((p: any) => p.type === 'text')
-      .map((p: any) => p.text)
-      .join('') || ''
-  }
-
   return (
-    <div className="flex flex-col h-full bg-card rounded-lg border border-border overflow-hidden">
+    <div className="flex flex-col h-full bg-[#0A101D] text-slate-200 overflow-hidden font-sans">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
-            <Bot className="w-5 h-5 text-primary" />
+      <div className="flex items-center justify-between p-5 border-b border-white/5 bg-[#0F172A]/80">
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className="w-12 h-12 rounded-full bg-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.4)] flex items-center justify-center relative z-10">
+              <Bot className="w-6 h-6 text-white" />
+            </div>
+            {/* Status dot */}
+            <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-red-500 border-2 border-[#0F172A] z-20"></div>
           </div>
           <div>
-            <h3 className="font-medium">AI Maintenance Assistant</h3>
-            <p className="text-xs text-muted-foreground">
-              {isLoading ? 'Analyzing...' : 'Ready to help'}
+            <h3 className="font-bold text-xl text-white tracking-tight">Neo</h3>
+            <p className="text-xs text-cyan-400 font-medium flex items-center gap-1">
+              <Sparkles className="w-3 h-3" /> Factory AI Assistant
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setIsSpeaking(!isSpeaking)}
-            className={cn(
-              'h-8 w-8 p-0',
-              isSpeaking && 'text-primary'
-            )}
-            title={isSpeaking ? 'Mute voice' : 'Enable voice'}
-          >
-            {isSpeaking ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0">
-            <X className="w-4 h-4" />
-          </Button>
+        
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 bg-[#1E293B]/80 px-3 py-1.5 rounded-full border border-white/5">
+            <span className="text-xs font-bold text-slate-300 tracking-wider">HEY NEO</span>
+            <Switch 
+              checked={heyNeoEnabled} 
+              onCheckedChange={setHeyNeoEnabled}
+              className="data-[state=checked]:bg-cyan-500 scale-75 origin-right"
+            />
+          </div>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-white transition-colors rounded-full hover:bg-white/5">
+            <X className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 ? (
-          <div className="text-center py-8">
-            <Bot className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
-            <p className="text-sm text-muted-foreground mb-4">
-              Hello! I am your AI maintenance assistant. Ask me about:
-            </p>
-            <ul className="text-xs text-muted-foreground space-y-1 mb-6">
-              <li>Machine health and diagnostics</li>
-              <li>Maintenance scheduling and optimization</li>
-              <li>Failure predictions and risk analysis</li>
-              <li>Report generation for technicians</li>
-            </ul>
-            
-            {/* Quick Actions */}
-            <div className="grid grid-cols-2 gap-2">
-              {quickActions.map((action) => (
-                <Button
-                  key={action.label}
-                  variant="secondary"
-                  size="sm"
-                  className="gap-2 text-xs justify-start"
-                  onClick={() => {
-                    setInput(action.prompt)
-                  }}
-                >
-                  <action.icon className="w-3 h-3" />
-                  {action.label}
-                </Button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          messages.map((message) => (
-            <div
-              key={message.id}
-              className={cn(
-                'flex gap-3',
-                message.role === 'user' ? 'justify-end' : 'justify-start'
-              )}
-            >
-              {message.role === 'assistant' && (
-                <div className="w-8 h-8 rounded-full bg-primary/20 flex-shrink-0 flex items-center justify-center">
-                  <Bot className="w-4 h-4 text-primary" />
-                </div>
-              )}
-              
-              <div
-                className={cn(
-                  'max-w-[80%] rounded-lg px-4 py-2 text-sm',
-                  message.role === 'user'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-muted'
-                )}
-              >
-                {message.role === 'user' ? (
-                  // Extract just the user question from context
-                  getMessageText(message).split('[User Question]').pop()?.trim() || getMessageText(message)
-                ) : (
-                  <div className="whitespace-pre-wrap">{getMessageText(message)}</div>
-                )}
-              </div>
+      {/* Tabs */}
+      <div className="px-5 py-3 border-b border-white/5">
+        <div className="flex bg-transparent rounded-lg">
+          <button 
+            onClick={() => setActiveTab('qa')}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all",
+              activeTab === 'qa' ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20 shadow-[0_4px_12px_rgba(6,182,212,0.1)]" : "text-slate-400 hover:text-slate-200"
+            )}
+          >
+            <Bot className="w-4 h-4" /> Q&A
+          </button>
+          <button 
+            onClick={() => setActiveTab('alerts')}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all relative",
+              activeTab === 'alerts' ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20" : "text-slate-400 hover:text-slate-200"
+            )}
+          >
+            <AlertTriangle className="w-4 h-4" /> Alerts
+            {alerts.filter(a => !a.acknowledged).length > 0 && (
+               <div className="w-2 h-2 rounded-full bg-red-500 absolute top-2 right-4"></div>
+            )}
+          </button>
+          <button 
+            onClick={() => setActiveTab('reports')}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all",
+              activeTab === 'reports' ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20" : "text-slate-400 hover:text-slate-200"
+            )}
+          >
+            <FileText className="w-4 h-4" /> Reports
+          </button>
+        </div>
+      </div>
 
-              {message.role === 'user' && (
-                <div className="w-8 h-8 rounded-full bg-muted flex-shrink-0 flex items-center justify-center">
-                  <MessageSquare className="w-4 h-4" />
+      {/* Messages Area */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-6 bg-gradient-to-b from-[#0A101D] to-[#05080f] relative">
+        <div className="absolute left-2 top-20 bottom-20 w-[2px] opacity-20 bg-gradient-to-b from-transparent via-red-500 to-transparent flex flex-col justify-between py-10 items-center">
+            <div className="h-2 w-[2px] bg-red-500"></div>
+            <div className="h-4 w-[2px] bg-red-500"></div>
+            <div className="h-6 w-[2px] bg-red-500"></div>
+            <div className="h-3 w-[2px] bg-red-500"></div>
+            <div className="h-5 w-[2px] bg-red-500"></div>
+            <div className="h-2 w-[2px] bg-red-500"></div>
+        </div>
+
+        {activeTab === 'qa' && (
+          <div className="space-y-6">
+            <div className="flex gap-4">
+              <div className="max-w-[85%] bg-[#1E293B] border border-white/5 rounded-2xl rounded-tl-sm p-4 shadow-lg z-10 ml-4">
+                <div className="flex items-center gap-2 mb-2 text-cyan-400">
+                  <Bot className="w-4 h-4" />
                 </div>
-              )}
-            </div>
-          ))
-        )}
-        
-        {isLoading && (
-          <div className="flex gap-3">
-            <div className="w-8 h-8 rounded-full bg-primary/20 flex-shrink-0 flex items-center justify-center">
-              <Bot className="w-4 h-4 text-primary" />
-            </div>
-            <div className="bg-muted rounded-lg px-4 py-3">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-2 h-2 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-2 h-2 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <p className="text-[15px] leading-relaxed text-slate-200">
+                  Hello! I'm Neo, your AI factory assistant. I'm monitoring equipment health in real-time.
+                </p>
               </div>
             </div>
+
+            {messages.map((m, idx) => (
+               <div key={idx} className={`flex gap-4 ${m.role === 'user' ? 'justify-end' : ''}`}>
+                  {m.role === 'assistant' && (
+                    <div className="max-w-[85%] bg-[#1E293B] border border-white/5 rounded-2xl rounded-tl-sm p-4 shadow-lg z-10 ml-4">
+                        <div className="flex items-center gap-2 mb-2 text-cyan-400">
+                          <Bot className="w-4 h-4" />
+                        </div>
+                        <p className="text-[15px] leading-relaxed text-slate-200">
+                          {m.content}
+                        </p>
+                    </div>
+                  )}
+                  {m.role === 'user' && (
+                     <div className="max-w-[85%] bg-cyan-600 border border-cyan-500/50 rounded-2xl rounded-tr-sm p-4 shadow-lg z-10 mr-4">
+                        <div className="flex items-center justify-end gap-2 mb-2 text-cyan-100">
+                          <MessageSquare className="w-4 h-4" />
+                        </div>
+                        <p className="text-[15px] leading-relaxed text-white">
+                          {m.content}
+                        </p>
+                     </div>
+                  )}
+               </div>
+            ))}
+            
+            {isProcessing && (
+              <div className="flex gap-4">
+                <div className="bg-[#1E293B] border border-white/5 rounded-2xl rounded-tl-sm px-5 py-4 shadow-lg z-10 ml-4">
+                    <div className="flex gap-1.5 items-center justify-center">
+                       <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                       <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                       <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
         
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <div className="p-4 border-t border-border">
-        <form onSubmit={handleSubmit} className="flex gap-2">
-          <Button
-            type="button"
-            variant={isListening ? 'default' : 'secondary'}
-            size="sm"
-            onClick={toggleListening}
-            className={cn(
-              'h-10 w-10 p-0 flex-shrink-0',
-              isListening && 'animate-pulse'
-            )}
-            title={isListening ? 'Stop listening' : 'Start voice input'}
-          >
-            {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-          </Button>
+      {/* Input Area */}
+      <div className="p-5 border-t border-white/5 bg-[#0F172A]/80">
+        <form onSubmit={handleSubmit} className="relative flex items-center gap-3">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask Neo about equipment..."
+              className="w-full bg-[#1E293B] border border-white/10 rounded-xl px-5 py-4 text-[15px] text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all pr-12"
+            />
+            <button 
+              type="button"
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-400 transition-colors"
+            >
+              <Mic className="w-5 h-5" />
+            </button>
+          </div>
           
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={isListening ? 'Listening...' : 'Ask about maintenance, diagnostics, or reports...'}
-            className="flex-1 px-4 py-2 bg-muted rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-            disabled={isLoading || isListening}
-          />
-          
-          <Button
+          <button
             type="submit"
-            size="sm"
-            disabled={!input.trim() || isLoading}
-            className="h-10 w-10 p-0 flex-shrink-0"
+            disabled={!input.trim()}
+            className="h-[54px] w-[54px] bg-cyan-600 hover:bg-cyan-500 focus:bg-cyan-500 rounded-xl flex items-center justify-center text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 shadow-[0_0_15px_rgba(6,182,212,0.3)] disabled:shadow-none"
           >
-            <Send className="w-4 h-4" />
-          </Button>
+            <Send className="w-5 h-5 ml-1" />
+          </button>
         </form>
+
+        {/* Suggested Queries */}
+        <div className="mt-5">
+          <p className="text-[11px] font-bold text-slate-500 tracking-widest text-center uppercase mb-3">
+            Suggested Queries
+          </p>
+          <div className="flex flex-wrap gap-2 justify-center">
+            {suggestedQueries.map((query, i) => (
+              <button
+                key={i}
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleSubmit(null, query);
+                }}
+                className="px-4 py-2 rounded-full border border-white/10 bg-[#1E293B]/50 text-[13px] text-slate-300 hover:bg-[#1E293B] hover:text-white hover:border-white/20 transition-all"
+              >
+                {query}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )

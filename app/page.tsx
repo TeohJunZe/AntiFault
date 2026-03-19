@@ -23,6 +23,8 @@ import { MaintenancePlanner } from '@/components/maintenance-planner'
 import { SimulationPanel } from '@/components/simulation-panel'
 import { TechnologySuggestions } from '@/components/technology-suggestions'
 import { AIAssistant } from '@/components/ai-assistant'
+import { HUDOverlay } from '@/components/hud/HUDOverlay'
+import { useNeoHUD } from '@/components/hud/NeoHUDContext'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -44,6 +46,8 @@ import {
 } from 'lucide-react'
 
 export default function DigitalTwinDashboard() {
+  const { setIsHUDVisible } = useNeoHUD()
+  
   const [machines] = useState(mockMachines)
   const [alerts, setAlerts] = useState(mockAlerts)
   const [tasks] = useState(mockMaintenanceTasks)
@@ -160,16 +164,7 @@ export default function DigitalTwinDashboard() {
               )}
             </Button>
 
-            {/* AI Assistant Toggle */}
-            <Button
-              variant={showAssistant ? 'default' : 'secondary'}
-              size="sm"
-              onClick={() => setShowAssistant(!showAssistant)}
-              className="gap-2"
-            >
-              <Bot className="w-4 h-4" />
-              <span className="hidden sm:inline">AI Assistant</span>
-            </Button>
+
 
             <Button variant="ghost" size="sm">
               <Settings className="w-5 h-5" />
@@ -278,7 +273,7 @@ export default function DigitalTwinDashboard() {
                                 >
                                   <div>
                                     <div className="font-medium text-sm">{machine?.name || 'Unknown'}</div>
-                                    <div className="text-xs text-muted-foreground">{task.title}</div>
+                                    <div className="text-xs text-muted-foreground capitalize">{task.type} Maintenance</div>
                                   </div>
                                   <div className="text-right">
                                     <div className="text-xs text-primary font-medium">
@@ -594,18 +589,40 @@ export default function DigitalTwinDashboard() {
             </div>
           )}
         </main>
+        {/* HUD Overlay */}
+        <HUDOverlay />
 
         {/* AI Assistant Sidebar */}
         {showAssistant && (
-          <aside className="fixed right-0 top-[57px] bottom-0 w-full lg:w-[400px] z-40 border-l border-border bg-background/95 backdrop-blur">
+          <aside className="fixed right-0 top-0 bottom-0 w-full lg:w-[450px] z-[60] border-l border-cyan-500/20 bg-[#0A101D] shadow-2xl transition-transform duration-300">
             <AIAssistant
               machines={machines}
               alerts={alerts}
               tasks={tasks}
               selectedMachine={selectedMachine}
-              onClose={() => setShowAssistant(false)}
+              onClose={() => {
+                setShowAssistant(false);
+                setIsHUDVisible(false);
+              }}
             />
           </aside>
+        )}
+
+        {/* Floating AI Assistant Button */}
+        {!showAssistant && (
+          <button
+            onClick={() => {
+              setShowAssistant(true);
+              setIsHUDVisible(true);
+            }}
+            className="fixed bottom-6 right-6 w-14 h-14 rounded-full bg-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.5)] flex items-center justify-center hover:scale-110 transition-transform z-40 group"
+          >
+            <Bot className="w-7 h-7 text-white" />
+            
+            {/* Ping animation rings */}
+            <div className="absolute inset-0 rounded-full border border-cyan-400 animate-ping opacity-75"></div>
+            <div className="absolute inset-0 rounded-full border border-cyan-300 animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite] opacity-50"></div>
+          </button>
         )}
       </div>
     </div>
