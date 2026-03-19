@@ -108,6 +108,23 @@ export function MachineViewer3D({
             if (data.predicted_rul < 30) newStatus = 'critical';
             else if (data.predicted_rul <= 80) newStatus = 'impaired';
             newPredictions[m.id] = { rul: data.predicted_rul, status: newStatus };
+
+            // Store explainability data for the XAI panel
+            if (data.top_sensors || data.attn_peak_cycle !== undefined) {
+              try {
+                const stored = localStorage.getItem('engineExplainability')
+                const existing = stored ? JSON.parse(stored) : {}
+                existing[m.id] = {
+                  top_sensors: data.top_sensors || [],
+                  attn_peak_cycle: data.attn_peak_cycle ?? 0,
+                  status: data.status || '',
+                  predicted_rul: data.predicted_rul,
+                }
+                localStorage.setItem('engineExplainability', JSON.stringify(existing))
+              } catch (e) {
+                console.warn('Failed to store explainability data', e)
+              }
+            }
           }
 
           // Call /detect_changepoint with the SAME payload
