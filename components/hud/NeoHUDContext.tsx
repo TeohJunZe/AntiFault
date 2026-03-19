@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, ReactNode } from "react";
+import React, { createContext, useContext, useState, useCallback, ReactNode } from "react";
 import { ContextMemory } from "@/lib/neo-engine";
 
 export type NeoState = "idle" | "listening" | "processing" | "speaking" | "alert";
@@ -91,9 +91,9 @@ export function NeoHUDProvider({ children }: { children: ReactNode }) {
   const [focusedMachine, setFocusedMachine] = useState<string | null>(null);
   const [highlightedKeyword, setHighlightedKeyword] = useState<string | null>(null);
 
-  const addLog = (log: string) => {
-    setCommandLogs((prev) => [log, ...prev].slice(0, 10)); // Keep last 10 logs
-  };
+  const addLog = useCallback((log: string) => {
+    setCommandLogs((prev) => [log, ...prev].slice(0, 10));
+  }, []);
 
   return (
     <NeoHUDContext.Provider

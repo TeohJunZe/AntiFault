@@ -95,7 +95,7 @@ export function AIAssistant({
     ]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [isListeningSTT, setIsListeningSTT] = useState(false);
-    const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+    const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const recognitionRef = useRef<any>(null);
@@ -260,59 +260,78 @@ export function AIAssistant({
         recognition.start();
     }, [setNeoState, neoState, streamAndSpeak]);
 
-    // ─── Porcupine Wake Word ──────────────────────────────────────
-    useEffect(() => {
-        if (!wakeWordEnabled || !PICOVOICE_ACCESS_KEY) {
-            if (porcupineRef.current) {
-                import('@picovoice/web-voice-processor').then(({ WebVoiceProcessor }) => {
-                    WebVoiceProcessor.unsubscribe(porcupineRef.current).catch(() => {});
-                });
-                porcupineRef.current.release?.().catch(() => {});
-                porcupineRef.current = null;
-            }
-            return;
-        }
+    // ─── Web Speech Wake Word Spotter ─────────────────────────────
+    const wakeRecognitionRef = useRef<any>(null);
+    const wakeActiveRef = useRef(false);
+    const startSTTRef = useRef(startSTT);
+    useEffect(() => { startSTTRef.current = startSTT; }, [startSTT]);
 
-        let cancelled = false;
-        async function init() {
-            try {
-                const { PorcupineWorker } = await import('@picovoice/porcupine-web');
-                const { WebVoiceProcessor } = await import('@picovoice/web-voice-processor');
-                if (cancelled) return;
+    // Assign function to a ref every render so onend always calls the freshest version
+    const runWakeSession = useRef<() => void>(() => {});
+    runWakeSession.current = () => {
+        if (typeof window === 'undefined' || !wakeActiveRef.current) return;
+        const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SR) { console.warn('[Neo] SpeechRecognition not supported.'); return; }
 
-                const porcupine = await PorcupineWorker.create(
-                    PICOVOICE_ACCESS_KEY,
-                    [{ publicPath: '/hey_neo.ppn', label: 'Hey Neo', sensitivity: 0.75 }],
-                    () => {
-                        addLog("Wake word DETECTED: Hey Neo");
-                        setChatOpen(true);
-                        setHUDVisible(true);
-                        setNeoState('listening');
-                        speakSentence('Yes?');
-                        setTimeout(() => startSTT(), 400);
-                    },
-                    { publicPath: '/porcupine_params.pv' }
-                );
+        const rec = new SR();
+        rec.lang = 'en-US';
+        rec.continuous = false;
+        rec.interimResults = true;
 
-                if (cancelled) { porcupine.release(); return; }
-                porcupineRef.current = porcupine;
-                await WebVoiceProcessor.subscribe(porcupine);
-                addLog("Wake word detection active.");
-            } catch (err) {
-                console.error('Porcupine error:', err);
-            }
-        }
-        init();
-        return () => {
-            cancelled = true;
-            if (porcupineRef.current) {
-                import('@picovoice/web-voice-processor').then(({ WebVoiceProcessor }) => {
-                    WebVoiceProcessor.unsubscribe(porcupineRef.current).catch(() => {});
-                });
-                porcupineRef.current.release?.().catch(() => {});
+        rec.onresult = (event: any) => {
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const t = event.results[i][0].transcript.toLowerCase().trim();
+                console.log('[Neo Wake] heard:', t);
+                if (t.includes('hey neo') || t.includes('a neo') || t.includes('hey, neo') || t.includes('heyneo') || t.includes('hey new') || t.includes('a new') || t.includes('hey, new')) {
+                    wakeActiveRef.current = false;
+                    rec.abort();
+                    addLog("Wake: Hey Neo detected");
+                    setChatOpen(true);
+                    setHUDVisible(true);
+                    setNeoState('listening');
+                    speakSentence("Yes I'm here.");
+                    setTimeout(() => startSTTRef.current(), 1500);
+                    return;
+                }
             }
         };
-    }, [wakeWordEnabled, setChatOpen, setHUDVisible, setNeoState, startSTT, addLog]);
+
+        rec.onerror = (e: any) => {
+            console.log('[Neo Wake] error:', e.error);
+            if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                wakeActiveRef.current = false;
+            }
+        };
+
+        rec.onend = () => {
+            // Always calls the latest runWakeSession via ref — no stale closure
+            if (wakeActiveRef.current) {
+                setTimeout(() => runWakeSession.current(), 150);
+            }
+        };
+
+        wakeRecognitionRef.current = rec;
+        console.log('[Neo Wake] Session starting…');
+        try { rec.start(); } catch (err) {
+            console.error('[Neo Wake] start() threw:', err);
+            setTimeout(() => { if (wakeActiveRef.current) runWakeSession.current(); }, 500);
+        }
+    };
+
+    useEffect(() => {
+        if (!wakeWordEnabled) {
+            wakeActiveRef.current = false;
+            try { wakeRecognitionRef.current?.abort(); } catch {}
+            return;
+        }
+        wakeActiveRef.current = true;
+        runWakeSession.current();
+        addLog("Wake word active.");
+        return () => {
+            wakeActiveRef.current = false;
+            try { wakeRecognitionRef.current?.abort(); } catch {}
+        };
+    }, [wakeWordEnabled]); // only fires when the toggle changes
 
     // ─── Simulate Alert ───────────────────────────────────────────
     const handleSimulateAlert = useCallback(async () => {

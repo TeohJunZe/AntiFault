@@ -10,9 +10,14 @@ import { useNeoHUD } from "./NeoHUDContext";
 import { X } from "lucide-react";
 
 export function HUDOverlay() {
-  const { isHUDVisible, setHUDVisible, isChatOpen, setChatOpen } = useNeoHUD();
+  const { isHUDVisible, setHUDVisible, isChatOpen, setChatOpen, activeUIModules } = useNeoHUD();
 
   if (!isHUDVisible) return null;
+
+  // Derive which data widgets to show from the intent-mapped modules
+  const showMotor = activeUIModules.includes("STATUS_PANEL") || activeUIModules.includes("COMPARE_VIEW");
+  const showBearing = activeUIModules.includes("TREND_GRAPH") || activeUIModules.includes("PREDICTION_PANEL") || activeUIModules.includes("COMPARE_VIEW");
+  const showSystem = activeUIModules.includes("SYSTEM_OVERVIEW") || activeUIModules.includes("ALERT_PANEL") || (!showMotor && !showBearing);
 
   return (
     <>
@@ -37,10 +42,10 @@ export function HUDOverlay() {
         {/* Master AI Core */}
         <AICore />
 
-        {/* Dynamic Context-Aware Widgets (Top-Left) */}
-        <SystemOverviewWidget />
-        <MotorAnalysisWidget />
-        <BearingAnalysisWidget />
+        {/* Dynamic Context-Aware Widgets — driven by activeUIModules */}
+        {showSystem && <SystemOverviewWidget />}
+        {showMotor && <MotorAnalysisWidget />}
+        {showBearing && <BearingAnalysisWidget />}
 
         {/* Static HUD Elements */}
         <AIAnalysisPanel />
@@ -50,3 +55,4 @@ export function HUDOverlay() {
     </>
   );
 }
+

@@ -50,7 +50,7 @@ import {
 const LAYOUT_KEY = 'factoryFloorLayout'
 
 export default function DigitalTwinDashboard() {
-  const { setHUDVisible, isChatOpen } = useNeoHUD()
+  const { setHUDVisible, isChatOpen, isHUDVisible } = useNeoHUD()
   const [machines, setMachines] = useState<Machine[]>(() => {
     if (typeof window === 'undefined') return mockMachines
     try {
@@ -206,7 +206,10 @@ export default function DigitalTwinDashboard() {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <header className={cn(
+        "sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 transition-opacity duration-500",
+        isHUDVisible && "opacity-0 pointer-events-none"
+      )}>
         <div className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-4">
             {selectedMachine && (
@@ -287,7 +290,8 @@ export default function DigitalTwinDashboard() {
         {/* Main Panel */}
         <main className={cn(
           'flex-1 p-6 transition-all duration-300',
-          isChatOpen && 'lg:mr-[400px]'
+          isChatOpen && 'lg:mr-[400px]',
+          isHUDVisible && 'opacity-0 pointer-events-none'
         )}>
           {!selectedMachine ? (
             // COMMAND CENTER VIEW
