@@ -8,6 +8,10 @@ import * as THREE from 'three'
 import { Button } from '@/components/ui/button'
 import { Box, Layers, RotateCcw } from 'lucide-react'
 
+import mockRul10 from '../backend/mock_data/mock_payload_rul_10.json'
+import mockRul40 from '../backend/mock_data/mock_payload_rul_40.json'
+import mockRul100 from '../backend/mock_data/mock_payload_rul_100.json'
+
 interface MachineViewer3DProps {
   machine: Machine | null
   onComponentSelect: (component: MachineComponent | null) => void
@@ -26,6 +30,86 @@ export function MachineViewer3D({
   onMachineSelect
 }: MachineViewer3DProps) {
   const [isExploded, setIsExploded] = useState(false)
+  const [predictions, setPredictions] = useState<Record<string, {rul: number, status: Machine['status']}>>({})
+
+  const hasFetchedOnce = useRef(false)
+
+  useEffect(() => {
+    async function fetchPredictions() {
+      const machinesToProcess = isFleetView ? machines : (machine ? [machine] : [])
+      
+      try {
+        const cached = localStorage.getItem('enginePredictions')
+        if (cached) {
+          const parsed = JSON.parse(cached)
+          // Simple check to see if we have predictions cached for our view target
+          const allCached = machinesToProcess.every(m => parsed[m.id] !== undefined)
+          if (allCached) {
+            setPredictions(prev => {
+              if (JSON.stringify(prev) === cached) return prev;
+              return parsed;
+            });
+            
+            // Only bailout of the network request if we have already fetched dynamically this session
+            if (hasFetchedOnce.current) {
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to parse cached predictions", e)
+      }
+
+      hasFetchedOnce.current = true;
+
+      const newPredictions: Record<string, {rul: number, status: Machine['status']}> = {}
+
+      for (const m of machinesToProcess) {
+        try {
+          // Distribute distinct mocked degradation histories per machine to output varying realistic parameters
+          let payload;
+          if (m.id === 'machine-1' || m.id === 'machine-4') payload = mockRul40;
+          else if (m.id === 'machine-2' || m.id === 'machine-5') payload = mockRul100;
+          else payload = mockRul10;
+          
+          payload = { ...payload, engine_id: m.id };
+
+          const response = await fetch("http://localhost:8000/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            let newStatus: Machine['status'] = 'optimal';
+            if (data.predicted_rul < 30) newStatus = 'critical';
+            else if (data.predicted_rul <= 80) newStatus = 'impaired';
+            
+            newPredictions[m.id] = {
+              rul: data.predicted_rul,
+              status: newStatus
+            };
+          }
+        } catch (error) {
+          console.error("Failed to fetch prediction for", m.id, error)
+        }
+      }
+
+      if (Object.keys(newPredictions).length > 0) {
+        // Safe access to localStorage outside of React's synchronous render loops
+        const stored = localStorage.getItem('enginePredictions')
+        const currentData = stored ? JSON.parse(stored) : {}
+        const mergedObj = { ...currentData, ...newPredictions }
+        
+        localStorage.setItem('enginePredictions', JSON.stringify(mergedObj))
+        window.dispatchEvent(new Event('predictionsUpdated'))
+        
+        setPredictions(prev => ({ ...prev, ...newPredictions }))
+      }
+    }
+    fetchPredictions()
+  }, [isFleetView, machines, machine])
 
   // Fleet View Mode
   if (isFleetView && machines.length > 0) {
@@ -42,7 +126,7 @@ export function MachineViewer3D({
           <pointLight position={[10, 10, 10]} intensity={0.8} />
           <pointLight position={[-10, -10, -10]} intensity={0.3} />
           
-          <FleetModel machines={machines} onMachineSelect={onMachineSelect} />
+          <FleetModel machines={machines} onMachineSelect={onMachineSelect} predictions={predictions} />
           
           <OrbitControls
             enablePan={true}
@@ -97,11 +181,11 @@ export function MachineViewer3D({
       <div className="absolute top-3 right-3 z-10">
         <div className={`
           px-3 py-1.5 rounded-full text-xs font-medium
-          ${machine.status === 'optimal' ? 'bg-success/20 text-success' :
-            machine.status === 'impaired' ? 'bg-warning/20 text-warning' :
+          ${((predictions || {})[machine.id]?.status || machine.status) === 'optimal' ? 'bg-success/20 text-success' :
+            ((predictions || {})[machine.id]?.status || machine.status) === 'impaired' ? 'bg-warning/20 text-warning' :
             'bg-destructive/20 text-destructive animate-pulse'}
         `}>
-          {machine.status.toUpperCase()} - Health: {machine.healthIndex}%
+          {((predictions || {})[machine.id]?.status || machine.status).toUpperCase()} - RUL: {(predictions || {})[machine.id]?.rul ?? machine.rul} Days
         </div>
       </div>
 
@@ -135,9 +219,10 @@ export function MachineViewer3D({
 interface FleetModelProps {
   machines: Machine[]
   onMachineSelect?: (id: string) => void
+  predictions?: Record<string, {rul: number, status: Machine['status']}>
 }
 
-function FleetModel({ machines, onMachineSelect }: FleetModelProps) {
+function FleetModel({ machines, onMachineSelect, predictions = {} }: FleetModelProps) {
   const gridSize = Math.ceil(Math.sqrt(machines.length))
   const spacing = 3
 
@@ -157,7 +242,10 @@ function FleetModel({ machines, onMachineSelect }: FleetModelProps) {
         const col = index % gridSize
         const x = (col - gridSize / 2) * spacing + spacing / 2
         const z = (row - gridSize / 2) * spacing + spacing / 2
-        const isProblem = machine.status === 'critical'
+        
+        const currentStatus = predictions[machine.id]?.status || machine.status
+        const currentRul = predictions[machine.id]?.rul ?? machine.rul
+        const isProblem = currentStatus === 'critical'
 
         return (
           <group key={machine.id} position={[x, 0, z]}>
@@ -190,7 +278,7 @@ function FleetModel({ machines, onMachineSelect }: FleetModelProps) {
               >
                 <boxGeometry args={[1, 0.8, 0.7]} />
                 <meshStandardMaterial
-                  color={getStatusColor(machine.status)}
+                  color={getStatusColor(currentStatus)}
                   metalness={0.5}
                   roughness={0.4}
                   emissive={isProblem ? '#ef4444' : '#000000'}
@@ -203,8 +291,8 @@ function FleetModel({ machines, onMachineSelect }: FleetModelProps) {
             <mesh position={[0, 0.85, 0]}>
               <sphereGeometry args={[0.08, 16, 16]} />
               <meshStandardMaterial
-                color={getStatusColor(machine.status)}
-                emissive={getStatusColor(machine.status)}
+                color={getStatusColor(currentStatus)}
+                emissive={getStatusColor(currentStatus)}
                 emissiveIntensity={isProblem ? 1 : 0.5}
               />
             </mesh>
@@ -220,10 +308,10 @@ function FleetModel({ machines, onMachineSelect }: FleetModelProps) {
                 <div className="font-medium">{machine.name}</div>
                 <div className="text-muted-foreground">
                   RUL: <span className={
-                    machine.rul > 15 ? 'text-success' :
-                    machine.rul > 5 ? 'text-warning' :
+                    currentRul > 80 ? 'text-success' :
+                    currentRul > 30 ? 'text-warning' :
                     'text-destructive'
-                  }>{machine.rul}d</span>
+                  }>{currentRul} Days</span>
                 </div>
               </div>
             </Html>

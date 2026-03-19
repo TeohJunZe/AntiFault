@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { Machine } from '@/lib/data'
 import { cn } from '@/lib/utils'
 
@@ -10,6 +11,28 @@ interface FloorMapProps {
 }
 
 export function FloorMap({ machines, selectedMachineId, onSelectMachine }: FloorMapProps) {
+  const [predictions, setPredictions] = useState<Record<string, {rul: number, status: Machine['status']}>>({})
+
+  useEffect(() => {
+    const handleStorage = () => {
+      try {
+        const cached = localStorage.getItem('enginePredictions')
+        if (cached) {
+          setPredictions(JSON.parse(cached))
+        }
+      } catch (e) {
+        console.warn("Error parsing predictions from local storage", e)
+      }
+    }
+    
+    // Initial fetch
+    handleStorage()
+    
+    // Listen to custom updates from other components
+    window.addEventListener('predictionsUpdated', handleStorage)
+    return () => window.removeEventListener('predictionsUpdated', handleStorage)
+  }, [])
+
   const getStatusColor = (status: Machine['status']) => {
     switch (status) {
       case 'optimal':
@@ -51,27 +74,32 @@ export function FloorMap({ machines, selectedMachineId, onSelectMachine }: Floor
       <div className="absolute bottom-2 right-2 text-xs text-muted-foreground font-mono">Scale: 1:100</div>
 
       {/* Machine markers */}
-      {machines.map((machine) => (
-        <button
-          key={machine.id}
-          onClick={() => onSelectMachine(machine.id)}
-          className={cn(
-            'absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-300',
-            'w-10 h-10 rounded-lg flex items-center justify-center',
-            'hover:scale-110 focus:outline-none focus:ring-2 focus:ring-primary',
-            getStatusColor(machine.status),
-            getStatusGlow(machine.status),
-            selectedMachineId === machine.id && 'ring-2 ring-primary scale-110'
-          )}
-          style={{
-            left: `${machine.location.x}%`,
-            top: `${machine.location.y}%`,
-          }}
-          title={`${machine.name} - ${machine.status.toUpperCase()}`}
-        >
-          <MachineIcon type={machine.type} />
-        </button>
-      ))}
+      {machines.map((machine) => {
+        const currentStatus = predictions[machine.id]?.status || machine.status
+        const currentRul = predictions[machine.id]?.rul ?? machine.rul
+
+        return (
+          <button
+            key={machine.id}
+            onClick={() => onSelectMachine(machine.id)}
+            className={cn(
+              'absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-300',
+              'w-10 h-10 rounded-lg flex items-center justify-center',
+              'hover:scale-110 focus:outline-none focus:ring-2 focus:ring-primary',
+              getStatusColor(currentStatus),
+              getStatusGlow(currentStatus),
+              selectedMachineId === machine.id && 'ring-2 ring-primary scale-110'
+            )}
+            style={{
+              left: `${machine.location.x}%`,
+              top: `${machine.location.y}%`,
+            }}
+            title={`${machine.name} - ${currentStatus.toUpperCase()} - RUL: ${currentRul} Days`}
+          >
+            <MachineIcon type={machine.type} />
+          </button>
+        )
+      })}
 
       {/* Legend */}
       <div className="absolute bottom-2 left-2 flex gap-4 text-xs">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { 
   mockMachines, 
   mockAlerts, 
@@ -54,14 +54,38 @@ export default function DigitalTwinDashboard() {
   const [dashboardTab, setDashboardTab] = useState('fleet')
   const [statFilter, setStatFilter] = useState<'optimal' | 'impaired' | 'critical' | 'scheduled' | null>(null)
 
+  const [predictions, setPredictions] = useState<Record<string, {rul: number, status: Machine['status']}>>({})
+
+  useEffect(() => {
+    const handleStorage = () => {
+      try {
+        const cached = localStorage.getItem('enginePredictions')
+        if (cached) {
+          setPredictions(JSON.parse(cached))
+        }
+      } catch (e) {}
+    }
+    handleStorage()
+    window.addEventListener('predictionsUpdated', handleStorage)
+    return () => window.removeEventListener('predictionsUpdated', handleStorage)
+  }, [])
+
+  const activeMachines = useMemo(() => {
+    return machines.map(m => ({
+      ...m,
+      rul: predictions[m.id]?.rul ?? m.rul,
+      status: predictions[m.id]?.status ?? m.status
+    }))
+  }, [machines, predictions])
+
   const selectedMachine = useMemo(
-    () => machines.find(m => m.id === selectedMachineId) || null,
-    [machines, selectedMachineId]
+    () => activeMachines.find(m => m.id === selectedMachineId) || null,
+    [activeMachines, selectedMachineId]
   )
 
   const globalHealth = useMemo(
-    () => calculateGlobalHealthIndex(machines),
-    [machines]
+    () => calculateGlobalHealthIndex(activeMachines),
+    [activeMachines]
   )
 
   const criticalAlerts = useMemo(
@@ -213,7 +237,7 @@ export default function DigitalTwinDashboard() {
                         )}
                       >
                         <div className="text-3xl font-bold text-success">
-                          {machines.filter(m => m.status === 'optimal').length}
+                          {activeMachines.filter(m => m.status === 'optimal').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Optimal</div>
                       </button>
@@ -225,7 +249,7 @@ export default function DigitalTwinDashboard() {
                         )}
                       >
                         <div className="text-3xl font-bold text-warning">
-                          {machines.filter(m => m.status === 'impaired').length}
+                          {activeMachines.filter(m => m.status === 'impaired').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Impaired</div>
                       </button>
@@ -237,7 +261,7 @@ export default function DigitalTwinDashboard() {
                         )}
                       >
                         <div className="text-3xl font-bold text-destructive">
-                          {machines.filter(m => m.status === 'critical').length}
+                          {activeMachines.filter(m => m.status === 'critical').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Critical</div>
                       </button>
@@ -269,7 +293,7 @@ export default function DigitalTwinDashboard() {
                         <div className="space-y-2 max-h-[200px] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                           {statFilter === 'scheduled' ? (
                             tasks.filter(t => t.status === 'scheduled').map(task => {
-                              const machine = machines.find(m => m.id === task.machineId)
+                              const machine = activeMachines.find(m => m.id === task.machineId)
                               return (
                                 <button
                                   key={task.id}
@@ -290,7 +314,7 @@ export default function DigitalTwinDashboard() {
                               )
                             })
                           ) : (
-                            machines.filter(m => m.status === statFilter).map(machine => (
+                            activeMachines.filter(m => m.status === statFilter).map(machine => (
                               <button
                                 key={machine.id}
                                 onClick={() => handleSelectMachine(machine.id)}
@@ -303,8 +327,8 @@ export default function DigitalTwinDashboard() {
                                 <div className="text-right">
                                   <div className={cn(
                                     "text-sm font-bold",
-                                    machine.rul <= 5 ? 'text-destructive' :
-                                    machine.rul <= 15 ? 'text-warning' :
+                                    machine.rul < 30 ? 'text-destructive' :
+                                    machine.rul <= 80 ? 'text-warning' :
                                     'text-success'
                                   )}>
                                     {machine.rul}d RUL
@@ -347,7 +371,7 @@ export default function DigitalTwinDashboard() {
                         <MachineViewer3D
                           machine={null}
                           isFleetView={true}
-                          machines={machines}
+                          machines={activeMachines}
                           onComponentSelect={() => {}}
                           selectedComponent={null}
                           onMachineSelect={handleSelectMachine}
@@ -389,7 +413,7 @@ export default function DigitalTwinDashboard() {
                       </CardHeader>
                       <CardContent>
                         <UrgencyQueue
-                          machines={machines}
+                          machines={activeMachines}
                           onSelectMachine={handleSelectMachine}
                         />
                       </CardContent>
@@ -401,7 +425,7 @@ export default function DigitalTwinDashboard() {
                         <CardTitle className="text-sm font-medium">Fleet RUL Timeline</CardTitle>
                       </CardHeader>
                       <CardContent>
-                        <RULGraph machine={null} machines={machines} isFleetView={true} />
+                        <RULGraph machine={null} machines={activeMachines} isFleetView={true} />
                       </CardContent>
                     </Card>
                   </div>
@@ -415,7 +439,7 @@ export default function DigitalTwinDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <SimulationPanel machine={null} machines={machines} isFleetView={true} />
+                      <SimulationPanel machine={null} machines={activeMachines} isFleetView={true} />
                     </CardContent>
                   </Card>
                 </TabsContent>
@@ -453,8 +477,8 @@ export default function DigitalTwinDashboard() {
                         <div>
                           <div className={cn(
                             'text-2xl font-bold font-mono',
-                            selectedMachine.rul <= 5 ? 'text-destructive' :
-                            selectedMachine.rul <= 15 ? 'text-warning' :
+                            selectedMachine.rul < 30 ? 'text-destructive' :
+                            selectedMachine.rul <= 80 ? 'text-warning' :
                             'text-success'
                           )}>
                             {selectedMachine.rul}
@@ -599,7 +623,7 @@ export default function DigitalTwinDashboard() {
         {showAssistant && (
           <aside className="fixed right-0 top-[57px] bottom-0 w-full lg:w-[400px] z-40 border-l border-border bg-background/95 backdrop-blur">
             <AIAssistant
-              machines={machines}
+              machines={activeMachines}
               alerts={alerts}
               tasks={tasks}
               selectedMachine={selectedMachine}
