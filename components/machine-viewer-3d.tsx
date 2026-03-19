@@ -85,6 +85,7 @@ export function MachineViewer3D({
 
       hasFetchedOnce.current = true;
       const newPredictions: Record<string, {rul: number, status: Machine['status']}> = {}
+      const newChangepoints: Record<string, {isImpaired: boolean, impairedCycle: number | null, reason: string, totalFlights: number}> = {}
 
       for (const m of machinesToProcess) {
         try {
@@ -94,6 +95,7 @@ export function MachineViewer3D({
           else payload = mockRul10;
           payload = { ...payload, engine_id: m.id };
 
+          // Call /predict
           const response = await fetch("http://localhost:8000/predict", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -107,6 +109,23 @@ export function MachineViewer3D({
             else if (data.predicted_rul <= 80) newStatus = 'impaired';
             newPredictions[m.id] = { rul: data.predicted_rul, status: newStatus };
           }
+
+          // Call /detect_changepoint with the SAME payload
+          const cpResponse = await fetch("http://localhost:8000/detect_changepoint", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+
+          if (cpResponse.ok) {
+            const cpData = await cpResponse.json();
+            newChangepoints[m.id] = {
+              isImpaired: cpData.is_impaired,
+              impairedCycle: cpData.impaired_flight_cycle,
+              reason: cpData.transition_reason,
+              totalFlights: cpData.total_flights_analyzed
+            };
+          }
         } catch (error) {
           console.error("Failed to fetch prediction for", m.id, error)
         }
@@ -117,7 +136,17 @@ export function MachineViewer3D({
         const currentData = stored ? JSON.parse(stored) : {}
         const mergedObj = { ...currentData, ...newPredictions }
         localStorage.setItem('enginePredictions', JSON.stringify(mergedObj))
-        window.dispatchEvent(new Event('predictionsUpdated'))
+      }
+
+      if (Object.keys(newChangepoints).length > 0) {
+        const stored = localStorage.getItem('engineChangepoints')
+        const currentData = stored ? JSON.parse(stored) : {}
+        const mergedObj = { ...currentData, ...newChangepoints }
+        localStorage.setItem('engineChangepoints', JSON.stringify(mergedObj))
+      }
+
+      window.dispatchEvent(new Event('predictionsUpdated'))
+      if (Object.keys(newPredictions).length > 0) {
         setPredictions(prev => ({ ...prev, ...newPredictions }))
       }
     }

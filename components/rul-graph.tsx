@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { Machine } from '@/lib/data'
 import {
   AreaChart,
@@ -23,6 +24,23 @@ interface RULGraphProps {
 }
 
 export function RULGraph({ machine, machines = [], isFleetView = false }: RULGraphProps) {
+  // Read change-point data from localStorage
+  const [changepoints, setChangepoints] = useState<Record<string, {
+    isImpaired: boolean, impairedCycle: number | null, reason: string, totalFlights: number
+  }>>({})
+
+  useEffect(() => {
+    const load = () => {
+      try {
+        const stored = localStorage.getItem('engineChangepoints')
+        if (stored) setChangepoints(JSON.parse(stored))
+      } catch {}
+    }
+    load()
+    window.addEventListener('predictionsUpdated', load)
+    return () => window.removeEventListener('predictionsUpdated', load)
+  }, [])
+
   // Fleet View - show RUL bar chart for all machines
   if (isFleetView && machines.length > 0) {
     const fleetData = machines
@@ -37,8 +55,8 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
       .sort((a, b) => a.rul - b.rul)
 
     const getBarColor = (rul: number) => {
-      if (rul <= 5) return '#ef4444'
-      if (rul <= 15) return '#eab308'
+      if (rul <= 30) return '#ef4444'
+      if (rul <= 80) return '#eab308'
       return '#22c55e'
     }
 
@@ -51,8 +69,8 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
             <div className="space-y-1">
               <p className="text-muted-foreground">
                 RUL: <span className={
-                  data.rul > 15 ? 'text-success' :
-                  data.rul > 5 ? 'text-warning' :
+                  data.rul > 80 ? 'text-success' :
+                  data.rul > 30 ? 'text-warning' :
                   'text-destructive'
                 }>{data.rul} days</span>
               </p>
@@ -83,15 +101,15 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
           <div className="flex items-center gap-4 text-xs">
             <div className="flex items-center gap-1.5">
               <div className="w-2.5 h-2.5 rounded-full bg-destructive" />
-              <span className="text-muted-foreground">Critical (&lt;5d)</span>
+              <span className="text-muted-foreground">At Risk (&le;30d)</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-2.5 h-2.5 rounded-full bg-warning" />
-              <span className="text-muted-foreground">Warning (&lt;15d)</span>
+              <span className="text-muted-foreground">Moderate (&le;80d)</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-2.5 h-2.5 rounded-full bg-success" />
-              <span className="text-muted-foreground">Good</span>
+              <span className="text-muted-foreground">Optimal</span>
             </div>
           </div>
         </div>
@@ -118,12 +136,12 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
               
               {/* Critical threshold */}
               <ReferenceLine
-                y={5}
+                y={30}
                 stroke="#ef4444"
                 strokeDasharray="3 3"
               />
               <ReferenceLine
-                y={15}
+                y={80}
                 stroke="#eab308"
                 strokeDasharray="3 3"
               />
@@ -148,53 +166,68 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
       </div>
     )
   }
-  // Generate RUL timeline data (simulated historical and projected)
+  // Read this machine's change-point data
+  const cpData = machine ? changepoints[machine.id] : null
+
+  // Generate RUL timeline data driven by the actual predicted RUL
   const generateRULData = () => {
     const data = []
     const today = new Date()
-    const totalDays = 90
+    const predictedRul = machine!.rul
+    const currentHealth = Math.min(100, Math.max(0, predictedRul))
+    const startHealth = 95
+
+    // If we have a changepoint, calculate its position in the 60-day historical window
+    // The changepoint is expressed as a flight cycle out of totalFlights.
+    // Map it to a day offset within -60..0
+    let changepointDayOffset: number | null = null
+    if (cpData?.isImpaired && cpData.impairedCycle !== null && cpData.totalFlights > 0) {
+      // Map flight cycle ratio to the 60-day window
+      const ratio = cpData.impairedCycle / cpData.totalFlights
+      changepointDayOffset = Math.round(-60 + ratio * 60)
+    }
 
     // Historical data (past 60 days)
     for (let i = -60; i <= 0; i++) {
       const date = new Date(today)
       date.setDate(date.getDate() + i)
-      
-      // Simulate degradation curve
-      let health: number
-      if (i < -30) {
-        health = 95 + Math.random() * 3 // Stable period
-      } else if (machine.changePointDate && new Date(machine.changePointDate) <= date) {
-        // After change point - accelerated degradation
-        const daysAfterChange = Math.floor((date.getTime() - new Date(machine.changePointDate).getTime()) / 86400000)
-        health = 85 - daysAfterChange * (100 - machine.healthIndex) / 30 + Math.random() * 5
-      } else {
-        // Gradual degradation
-        health = 95 - (30 + i) * 0.3 + Math.random() * 3
+
+      const t = (i + 60) / 60
+      const eased = t * t
+      let health = startHealth - eased * (startHealth - currentHealth)
+
+      // If after changepoint, apply steeper degradation
+      if (changepointDayOffset !== null && i >= changepointDayOffset) {
+        const cpT = (i - changepointDayOffset) / Math.max(1, (0 - changepointDayOffset))
+        const cpHealth = startHealth - (changepointDayOffset + 60) / 60 * (changepointDayOffset + 60) / 60 * (startHealth - currentHealth)
+        health = cpHealth - cpT * (cpHealth - currentHealth)
       }
+
+      const dayRul = Math.max(0, predictedRul - i)
+      const isCP = changepointDayOffset !== null && i === changepointDayOffset
 
       data.push({
         date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         health: Math.max(0, Math.min(100, Math.round(health))),
-        rul: Math.max(0, machine.rul + i),
+        rul: Math.round(dayRul),
         isProjected: false,
-        isChangePoint: machine.changePointDate && 
-          date.toDateString() === new Date(machine.changePointDate).toDateString(),
+        isChangePoint: isCP,
       })
     }
 
     // Projected data (next 30 days)
-    const degradationRate = (100 - machine.healthIndex) / 60
+    const dailyDegradation = predictedRul > 0 ? currentHealth / predictedRul : 5
     for (let i = 1; i <= 30; i++) {
       const date = new Date(today)
       date.setDate(date.getDate() + i)
-      
-      const projectedHealth = Math.max(0, machine.healthIndex - degradationRate * i * 1.2)
-      
+      const projectedHealth = Math.max(0, currentHealth - dailyDegradation * i)
+      const dayRul = Math.max(0, predictedRul - i)
+
       data.push({
         date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         health: Math.round(projectedHealth),
         projectedHealth: Math.round(projectedHealth),
-        rul: Math.max(0, machine.rul - i),
+        rul: Math.round(dayRul),
         isProjected: true,
         isChangePoint: false,
       })
@@ -246,17 +279,17 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
           <h4 className="text-sm font-medium">RUL Timeline</h4>
           <p className="text-xs text-muted-foreground">Health degradation over time</p>
         </div>
-        {machine.changePointDate && (
-          <div className="flex items-center gap-2 text-xs text-warning bg-warning/10 px-2 py-1 rounded">
-            <AlertTriangle className="w-3 h-3" />
-            Change point: {new Date(machine.changePointDate).toLocaleDateString()}
-          </div>
-        )}
+      {cpData?.isImpaired && (
+        <div className="flex items-center gap-2 text-xs text-warning bg-warning/10 px-2 py-1 rounded">
+          <AlertTriangle className="w-3 h-3" />
+          {cpData.reason}
+        </div>
+      )}
       </div>
 
-      <div className="h-[200px]">
+      <div className="h-[300px]">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+          <AreaChart data={data} margin={{ top: 25, right: 10, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="healthGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="oklch(0.75 0.15 195)" stopOpacity={0.4} />
@@ -311,7 +344,7 @@ export function RULGraph({ machine, machines = [], isFleetView = false }: RULGra
               dot={false}
             />
 
-            {/* Change point line */}
+            {/* Change point line from API */}
             {changePointIndex >= 0 && (
               <ReferenceLine
                 x={data[changePointIndex].date}

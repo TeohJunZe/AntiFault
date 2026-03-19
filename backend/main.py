@@ -233,6 +233,83 @@ async def predict_rul(request: InferenceRequest):
         status=status
     )
 
+# ==========================================
+# CHANGE-POINT DETECTION ENDPOINT
+# ==========================================
+@app.post("/detect_changepoint")
+async def detect_changepoint(request: InferenceRequest):
+    if len(request.flight_history) < 10:
+        raise HTTPException(status_code=400, detail="Need at least 10 flights to establish a healthy baseline.")
+        
+    # 1. Convert JSON to DataFrame & Apply Regimes/Features (Same as /predict)
+    df = pd.DataFrame(request.flight_history)
+    kmeans = pipeline_data['kmeans']
+    scalers = pipeline_data['scalers']
+    df['regime'] = kmeans.predict(df[op_cols])
+    
+    for regime in range(6):
+        if regime in scalers:
+            mask = df['regime'] == regime
+            if mask.sum() > 0:
+                df.loc[mask, important_sensors] = scalers[regime].transform(df.loc[mask, important_sensors])
+                
+    df = extract_features(df)
+    
+    # 2. Vectorized Timeline Generation
+    data = df[feature_cols].values
+    num_flights = len(data)
+    X_history = []
+    
+    for i in range(num_flights):
+        window = data[max(0, i - SEQ_LEN + 1) : i + 1]
+        if len(window) < SEQ_LEN:
+            pad_size = SEQ_LEN - len(window)
+            window = np.pad(window, ((pad_size, 0), (0, 0)), 'edge')
+        X_history.append(window)
+        
+    # X_tensor shape: [Total_Flights, 40, 168]
+    X_tensor = torch.tensor(np.array(X_history), dtype=torch.float32, device=device)
+    
+    # 3. Run Ensemble on the ENTIRE timeline simultaneously
+    ensemble_anomalies = np.zeros(num_flights)
+    ensemble_ruls = np.zeros(num_flights)
+    
+    with torch.no_grad():
+        for model in ensemble_models:
+            pred_rul, _, recon, _ = model(X_tensor)
+            ensemble_ruls += np.clip(pred_rul.cpu().numpy().flatten(), 0, RUL_CAP)
+            mse_per_seq = torch.mean((recon - X_tensor)**2, dim=(1, 2)).cpu().numpy()
+            ensemble_anomalies += mse_per_seq
+            
+    ensemble_ruls /= len(ensemble_models)
+    ensemble_anomalies /= len(ensemble_models)
+    
+    # 4. CHANGE-POINT LOGIC
+    baseline_anomaly = np.mean(ensemble_anomalies[:10])
+    anomaly_threshold = baseline_anomaly * 2.5
+    
+    change_point_cycle = -1
+    trigger_reason = "Engine is currently in a fully Healthy state."
+    
+    for cycle in range(num_flights):
+        if ensemble_ruls[cycle] < 120:
+            change_point_cycle = cycle + 1
+            trigger_reason = f"Thermodynamic Degradation Began (RUL dropped to {ensemble_ruls[cycle]:.1f})"
+            break
+            
+        if cycle > 10 and ensemble_anomalies[cycle] > anomaly_threshold:
+            change_point_cycle = cycle + 1
+            trigger_reason = f"Catastrophic Anomaly Spike Detected (Score: {ensemble_anomalies[cycle]:.4f})"
+            break
+            
+    return {
+        "engine_id": request.engine_id,
+        "total_flights_analyzed": num_flights,
+        "is_impaired": change_point_cycle != -1,
+        "impaired_flight_cycle": change_point_cycle if change_point_cycle != -1 else None,
+        "transition_reason": trigger_reason
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
