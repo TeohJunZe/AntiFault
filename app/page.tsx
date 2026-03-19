@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { 
   mockMachines, 
   mockAlerts, 
@@ -8,7 +8,8 @@ import {
   calculateGlobalHealthIndex,
   Machine,
   MachineComponent,
-  Alert
+  Alert,
+  generateSensorHistoryForHealth
 } from '@/lib/data'
 import { cn } from '@/lib/utils'
 
@@ -23,6 +24,7 @@ import { MaintenancePlanner } from '@/components/maintenance-planner'
 import { SimulationPanel } from '@/components/simulation-panel'
 import { TechnologySuggestions } from '@/components/technology-suggestions'
 import { AIAssistant } from '@/components/ai-assistant'
+import { MaintenanceOverview } from '@/components/maintenance-overview'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -43,10 +45,20 @@ import {
   Clock
 } from 'lucide-react'
 
+const LAYOUT_KEY = 'factoryFloorLayout'
+
 export default function DigitalTwinDashboard() {
-  const [machines] = useState(mockMachines)
+  const [machines, setMachines] = useState<Machine[]>(() => {
+    if (typeof window === 'undefined') return mockMachines
+    try {
+      const saved = localStorage.getItem(LAYOUT_KEY)
+      if (saved) return JSON.parse(saved) as Machine[]
+    } catch {}
+    return mockMachines
+  })
   const [alerts, setAlerts] = useState(mockAlerts)
   const [tasks] = useState(mockMaintenanceTasks)
+  const [isFloorEditMode, setIsFloorEditMode] = useState(false)
   const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null)
   const [selectedComponent, setSelectedComponent] = useState<MachineComponent | null>(null)
   const [showAssistant, setShowAssistant] = useState(false)
@@ -93,6 +105,13 @@ export default function DigitalTwinDashboard() {
     [alerts]
   )
 
+  // Persist layout changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(machines))
+    } catch {}
+  }, [machines])
+
   const handleAcknowledgeAlert = (id: string) => {
     setAlerts(prev => prev.map(a => 
       a.id === id ? { ...a, acknowledged: true } : a
@@ -113,6 +132,48 @@ export default function DigitalTwinDashboard() {
     setSelectedMachineId(null)
     setSelectedComponent(null)
   }
+
+  const handleAddMachine = useCallback((machine: Machine) => {
+    setMachines(prev => [...prev, machine])
+  }, [])
+
+  const handleUpdateMachinePosition = useCallback((id: string, location: { x: number; y: number }) => {
+    setMachines(prev => prev.map(m => m.id === id ? { ...m, location } : m))
+  }, [])
+
+  const handleRemoveMachine = useCallback((id: string) => {
+    setMachines(prev => prev.filter(m => m.id !== id))
+    if (selectedMachineId === id) {
+      setSelectedMachineId(null)
+      setSelectedComponent(null)
+    }
+  }, [selectedMachineId])
+
+  const handleScheduleMaintenance = useCallback((
+    machineId: string,
+    date: string,
+    technician: string,
+    type: string,
+    notes: string
+  ) => {
+    setMachines(prev => prev.map(m =>
+      m.id === machineId ? { ...m, nextScheduledMaintenance: date } : m
+    ))
+  }, [])
+
+  // Alert → Maintenance Tab navigation
+  const [focusedMachineId, setFocusedMachineId] = useState<string | null>(null)
+  const [focusedAlertMessage, setFocusedAlertMessage] = useState<string | null>(null)
+
+  const handleAlertClick = useCallback((machineId: string) => {
+    // Find the alert message for display in the banner
+    const alert = alerts.find(a => a.machineId === machineId && !a.acknowledged)
+    setFocusedMachineId(machineId)
+    setFocusedAlertMessage(alert?.message ?? null)
+    setDashboardTab('maintenance')
+    // Scroll to top so the maintenance tab is visible before the card scrollIntoView fires
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [alerts])
 
   return (
     <div className="min-h-screen bg-background">
@@ -348,16 +409,44 @@ export default function DigitalTwinDashboard() {
               {/* Tabbed Main Content */}
               <Tabs value={dashboardTab} onValueChange={setDashboardTab}>
                 <div className="flex items-center justify-between mb-4">
-                  <TabsList>
-                    <TabsTrigger value="fleet" className="gap-2">
-                      <Box className="w-4 h-4" />
+                  <div className="flex p-1 rounded-xl bg-muted/50 border border-border gap-1">
+                    <button
+                      onClick={() => setDashboardTab('fleet')}
+                      className={cn(
+                        'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+                        dashboardTab === 'fleet'
+                          ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shadow-sm shadow-indigo-500/10'
+                          : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                      )}
+                    >
+                      <Box className={cn('w-4 h-4', dashboardTab === 'fleet' && 'text-indigo-400')} />
                       Fleet Overview
-                    </TabsTrigger>
-                    <TabsTrigger value="ttf" className="gap-2">
-                      <Clock className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setDashboardTab('ttf')}
+                      className={cn(
+                        'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+                        dashboardTab === 'ttf'
+                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm shadow-amber-500/10'
+                          : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                      )}
+                    >
+                      <Clock className={cn('w-4 h-4', dashboardTab === 'ttf' && 'text-amber-400')} />
                       Time to Failure
-                    </TabsTrigger>
-                  </TabsList>
+                    </button>
+                    <button
+                      onClick={() => setDashboardTab('maintenance')}
+                      className={cn(
+                        'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+                        dashboardTab === 'maintenance'
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10'
+                          : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                      )}
+                    >
+                      <Wrench className={cn('w-4 h-4', dashboardTab === 'maintenance' && 'text-emerald-400')} />
+                      Maintenance
+                    </button>
+                  </div>
                 </div>
 
                 <TabsContent value="fleet" className="mt-0">
@@ -375,6 +464,11 @@ export default function DigitalTwinDashboard() {
                           onComponentSelect={() => {}}
                           selectedComponent={null}
                           onMachineSelect={handleSelectMachine}
+                          isEditMode={isFloorEditMode}
+                          onEditModeChange={setIsFloorEditMode}
+                          onAddMachine={handleAddMachine}
+                          onUpdateMachinePosition={handleUpdateMachinePosition}
+                          onRemoveMachine={handleRemoveMachine}
                         />
                       </CardContent>
                     </Card>
@@ -395,6 +489,7 @@ export default function DigitalTwinDashboard() {
                           alerts={alerts}
                           onAcknowledge={handleAcknowledgeAlert}
                           onDismiss={handleDismissAlert}
+                          onAlertClick={handleAlertClick}
                         />
                       </CardContent>
                     </Card>
@@ -442,6 +537,16 @@ export default function DigitalTwinDashboard() {
                       <SimulationPanel machine={null} machines={activeMachines} isFleetView={true} />
                     </CardContent>
                   </Card>
+                </TabsContent>
+
+                <TabsContent value="maintenance" className="mt-0">
+                  <MaintenanceOverview
+                    machines={activeMachines}
+                    onMachineSelect={handleSelectMachine}
+                    onScheduleMaintenance={handleScheduleMaintenance}
+                    focusedMachineId={focusedMachineId}
+                    focusedAlertMessage={focusedAlertMessage}
+                  />
                 </TabsContent>
               </Tabs>
             </div>

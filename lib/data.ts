@@ -295,6 +295,10 @@ export const technologySuggestions = [
 ]
 
 // Helper function to generate sensor history
+export function generateSensorHistoryForHealth(healthIndex: number): SensorReading[] {
+  return generateSensorHistory(healthIndex)
+}
+
 function generateSensorHistory(healthIndex: number): SensorReading[] {
   const now = Date.now()
   const readings: SensorReading[] = []

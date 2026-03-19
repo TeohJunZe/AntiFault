@@ -9,9 +9,10 @@ interface AlertPanelProps {
   alerts: Alert[]
   onAcknowledge: (id: string) => void
   onDismiss: (id: string) => void
+  onAlertClick?: (machineId: string) => void
 }
 
-export function AlertPanel({ alerts, onAcknowledge, onDismiss }: AlertPanelProps) {
+export function AlertPanel({ alerts, onAcknowledge, onDismiss, onAlertClick }: AlertPanelProps) {
   const unacknowledgedAlerts = alerts.filter(a => !a.acknowledged)
   const criticalCount = unacknowledgedAlerts.filter(a => a.severity === 'critical').length
 
@@ -56,14 +57,16 @@ export function AlertPanel({ alerts, onAcknowledge, onDismiss }: AlertPanelProps
             No active alerts
           </div>
         ) : (
-          alerts.map((alert) => (
+        alerts.map((alert) => (
             <div
               key={alert.id}
               className={cn(
                 'p-3 rounded-lg border transition-all',
                 getSeverityStyles(alert.severity),
-                alert.acknowledged && 'opacity-50'
+                alert.acknowledged && 'opacity-50',
+                onAlertClick && !alert.acknowledged && 'cursor-pointer hover:brightness-110 hover:shadow-md active:scale-[0.99]'
               )}
+              onClick={() => onAlertClick && !alert.acknowledged && onAlertClick(alert.machineId)}
             >
               <div className="flex items-start gap-2">
                 <div className={cn(
@@ -79,9 +82,14 @@ export function AlertPanel({ alerts, onAcknowledge, onDismiss }: AlertPanelProps
                     <span className="text-[10px] opacity-70">{formatTime(alert.timestamp)}</span>
                   </div>
                   <p className="text-xs leading-relaxed opacity-90">{alert.message}</p>
+                  {onAlertClick && !alert.acknowledged && (
+                    <p className="text-[10px] mt-1 opacity-60 flex items-center gap-1">
+                      🔧 Click to schedule maintenance
+                    </p>
+                  )}
                 </div>
 
-                <div className="flex-shrink-0 flex gap-1">
+                <div className="flex-shrink-0 flex gap-1" onClick={e => e.stopPropagation()}>
                   {!alert.acknowledged && (
                     <Button
                       variant="ghost"
