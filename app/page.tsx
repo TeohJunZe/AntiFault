@@ -716,7 +716,9 @@ export default function DigitalTwinDashboard() {
                         selectedComponent={selectedComponent}
                         tasks={tasks}
                         onScheduleMaintenance={() => {
-                          // Handle scheduling
+                          setFocusedMachineId(selectedMachine.id)
+                          setSelectedMachineId(null)
+                          setDashboardTab('maintenance')
                         }}
                       />
                     </CardContent>

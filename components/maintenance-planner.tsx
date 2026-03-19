@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { Machine, MaintenanceTask, MachineComponent } from '@/lib/data'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -29,7 +30,23 @@ export function MaintenancePlanner({
   tasks,
   onScheduleMaintenance 
 }: MaintenancePlannerProps) {
-  const machineTasks = tasks.filter(t => t.machineId === machine.id)
+  const [scheduledStorage, setScheduledStorage] = useState<{
+    machineId: string
+    scheduledDate: string
+    scheduledTime: string
+    technician: string
+    notes: string
+    scheduledAt: string
+  }[]>([])
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('maintenanceScheduled')
+      if (saved) setScheduledStorage(JSON.parse(saved))
+    } catch (e) {}
+  }, [])
+
+  const machineTasks = scheduledStorage.filter(t => t.machineId === machine.id)
   
   const getStatusIcon = (status: MaintenanceTask['status']) => {
     switch (status) {
@@ -80,11 +97,21 @@ export function MaintenancePlanner({
           </div>
           <Button
             size="sm"
-            onClick={onScheduleMaintenance}
-            className="gap-2"
+            onClick={machineTasks.length > 0 ? undefined : onScheduleMaintenance}
+            className={cn("gap-2", machineTasks.length > 0 && "opacity-90 pointer-events-none border border-emerald-500/30 text-emerald-400 bg-emerald-500/10")}
+            variant={machineTasks.length > 0 ? "outline" : "default"}
           >
-            <Wrench className="w-4 h-4" />
-            Book Now
+            {machineTasks.length > 0 ? (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                Scheduled
+              </>
+            ) : (
+              <>
+                <Wrench className="w-4 h-4" />
+                Book Now
+              </>
+            )}
           </Button>
         </div>
       </div>
@@ -139,6 +166,51 @@ export function MaintenancePlanner({
         </div>
       )}
 
+      {/* Existing Tasks */}
+      <div>
+        <h4 className="text-sm font-medium mb-3">Scheduled Tasks</h4>
+        {machineTasks.length > 0 ? (
+          <div className="space-y-2">
+            {machineTasks.map((task, i) => (
+              <div
+                key={i}
+                className="p-4 rounded-lg border transition-all bg-muted/30 border-border shadow-sm"
+              >
+                <div className="flex items-center justify-between mb-3 border-b border-border pb-2">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-primary" />
+                    <span className="text-base font-semibold">Scheduled Maintenance</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-sm text-foreground">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-medium">{new Date(task.scheduledDate).toLocaleDateString()}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-medium">{task.scheduledTime || '09:00'}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <User className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-medium truncate">{task.technician || 'Unassigned'}</span>
+                  </div>
+                  <div className="flex items-start gap-2 max-w-full overflow-hidden">
+                    <span className="font-medium text-muted-foreground shrink-0 mt-0.5">Notes:</span>
+                    <span className="text-sm truncate" title={task.notes}>{task.notes || '-'}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-lg text-center border border-dashed border-border">
+            No maintenance tasks scheduled for this machine.
+          </div>
+        )}
+      </div>
+
       {/* Resource Kit */}
       <div className="bg-muted/30 rounded-lg p-4">
         <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
@@ -181,53 +253,6 @@ export function MaintenancePlanner({
           )}
         </div>
       </div>
-
-      {/* Existing Tasks */}
-      {machineTasks.length > 0 && (
-        <div>
-          <h4 className="text-sm font-medium mb-3">Scheduled Tasks</h4>
-          <div className="space-y-2">
-            {machineTasks.map((task) => (
-              <div
-                key={task.id}
-                className={cn(
-                  'p-3 rounded-lg border transition-all',
-                  task.status === 'overdue' 
-                    ? 'bg-destructive/10 border-destructive/30'
-                    : 'bg-muted/30 border-border'
-                )}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    {getStatusIcon(task.status)}
-                    <span className="text-sm font-medium capitalize">{task.type} Maintenance</span>
-                  </div>
-                  {getPriorityBadge(task.priority)}
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-1">
-                    <Calendar className="w-3 h-3" />
-                    {new Date(task.scheduledDate).toLocaleDateString()}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {task.estimatedDuration}h duration
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <User className="w-3 h-3" />
-                    {task.assignedTechnician || 'Unassigned'}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <DollarSign className="w-3 h-3" />
-                    ${task.estimatedCost.toLocaleString()}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
