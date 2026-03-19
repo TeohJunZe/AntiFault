@@ -13,10 +13,10 @@ import {
   Clock,
   Plus,
   X,
-  ArrowRight,
   Undo2,
   Wrench,
 } from 'lucide-react'
+import React from 'react'
 
 // =============================================
 // Types & Constants
@@ -62,13 +62,17 @@ function getRulCategory(rul: number): RulCategory {
 interface MaintenanceBoardProps {
   machines: Machine[]
   onMachineSelect?: (id: string) => void
+  focusedMachineId?: string | null
+  onFocusClear?: () => void
 }
 
-export function MaintenanceBoard({ machines, onMachineSelect }: MaintenanceBoardProps) {
+export function MaintenanceBoard({ machines, onMachineSelect, focusedMachineId, onFocusClear }: MaintenanceBoardProps) {
   // ---- localStorage state ----
   const [scheduled, setScheduled] = useState<ScheduledEntry[]>([])
   const [completed, setCompleted] = useState<CompletedEntry[]>([])
   const [scheduleForm, setScheduleForm] = useState<{ machineId: string; date: string; time: string; technician: string; notes: string } | null>(null)
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+  const cardRefs = React.useRef<Record<string, HTMLDivElement | null>>({})
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -131,6 +135,49 @@ export function MaintenanceBoard({ machines, onMachineSelect }: MaintenanceBoard
 
     return cols
   }, [machines, scheduledIds, completedIds, predictions])
+
+  // ---- click outside ----
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('.machine-card')) {
+        setScheduleForm(null)
+        setHighlightId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // ---- focus effect ----
+  useEffect(() => {
+    if (focusedMachineId) {
+      setScheduleForm({
+        machineId: focusedMachineId,
+        date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+        time: '09:00',
+        technician: '',
+        notes: '',
+      })
+      
+      setHighlightId(focusedMachineId)
+
+      setTimeout(() => {
+        const el = cardRefs.current[focusedMachineId]
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+          
+          setTimeout(() => {
+            const dateInput = el.querySelector('input[type="date"]') as HTMLInputElement
+            if (dateInput) {
+              dateInput.focus()
+            }
+          }, 400) // Wait for scroll
+        }
+        if (onFocusClear) onFocusClear()
+      }, 100)
+    }
+  }, [focusedMachineId, onFocusClear])
 
   // ---- actions ----
   const handleSchedule = (machineId: string, date: string, time: string, technician: string, notes: string) => {
@@ -200,7 +247,19 @@ export function MaintenanceBoard({ machines, onMachineSelect }: MaintenanceBoard
                 return (
                   <div
                     key={machine.id}
-                    className="bg-background rounded-lg p-4 border-2 border-white/15 hover:border-primary/50 transition-all shadow-md"
+                    ref={el => { cardRefs.current[machine.id] = el }}
+                    className={cn(
+                      "machine-card bg-background rounded-lg p-4 transition-all shadow-md relative cursor-pointer",
+                      highlightId === machine.id 
+                        ? "border-2 border-primary ring-4 ring-primary/20 scale-[1.02] z-10" 
+                        : "border-2 border-white/15 hover:border-primary/50"
+                    )}
+                    onClick={(e) => {
+                      const target = e.target as HTMLElement
+                      if (!target.closest('button') && !target.closest('input')) {
+                        setHighlightId(machine.id)
+                      }
+                    }}
                   >
                     {/* Machine name & type */}
                     <div className="flex items-center justify-between mb-2">
@@ -333,7 +392,10 @@ export function MaintenanceBoard({ machines, onMachineSelect }: MaintenanceBoard
                                   size="sm"
                                   variant="ghost"
                                   className="h-9 text-sm px-2 flex-shrink-0"
-                                  onClick={() => setScheduleForm(null)}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setScheduleForm(null)
+                                  }}
                                 >
                                   <X className="w-3.5 h-3.5" />
                                 </Button>
@@ -344,13 +406,16 @@ export function MaintenanceBoard({ machines, onMachineSelect }: MaintenanceBoard
                               size="sm"
                               variant="outline"
                               className="flex-1 h-8 text-xs gap-1.5 border-white/15"
-                              onClick={() => setScheduleForm({
-                                machineId: machine.id,
-                                date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-                                time: '09:00',
-                                technician: '',
-                                notes: '',
-                              })}
+                              onClick={() => {
+                                setScheduleForm({
+                                  machineId: machine.id,
+                                  date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+                                  time: '09:00',
+                                  technician: '',
+                                  notes: '',
+                                })
+                                setHighlightId(machine.id)
+                              }}
                             >
                               <Plus className="w-3 h-3" />
                               Schedule

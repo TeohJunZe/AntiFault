@@ -56,8 +56,9 @@ export default function DigitalTwinDashboard() {
     } catch {}
     return mockMachines
   })
-  const [alerts, setAlerts] = useState(mockAlerts)
   const [tasks] = useState(mockMaintenanceTasks)
+  const [hiddenAlertIds, setHiddenAlertIds] = useState<Set<string>>(new Set())
+  const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<Set<string>>(new Set())
   const [isFloorEditMode, setIsFloorEditMode] = useState(false)
   const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null)
   const [selectedComponent, setSelectedComponent] = useState<MachineComponent | null>(null)
@@ -100,6 +101,33 @@ export default function DigitalTwinDashboard() {
     [activeMachines]
   )
 
+  const alerts = useMemo(() => {
+    return activeMachines.map(m => {
+      if (m.rul <= 30) {
+        return {
+          id: `alert-critical-${m.id}`,
+          machineId: m.id,
+          machineName: m.name,
+          severity: 'critical' as const,
+          message: `Critical RUL detected: ${m.rul.toFixed(0)} days remaining. Immediate maintenance required.`,
+          timestamp: new Date().toISOString(),
+          acknowledged: acknowledgedAlertIds.has(`alert-critical-${m.id}`)
+        }
+      } else if (m.rul <= 80) {
+        return {
+          id: `alert-warning-${m.id}`,
+          machineId: m.id,
+          machineName: m.name,
+          severity: 'warning' as const,
+          message: `High risk: RUL has fallen to ${m.rul.toFixed(0)} days. Schedule maintenance soon.`,
+          timestamp: new Date().toISOString(),
+          acknowledged: acknowledgedAlertIds.has(`alert-warning-${m.id}`)
+        }
+      }
+      return null
+    }).filter(a => a !== null && !hiddenAlertIds.has(a.id)) as Alert[]
+  }, [activeMachines, hiddenAlertIds, acknowledgedAlertIds])
+
   const criticalAlerts = useMemo(
     () => alerts.filter(a => a.severity === 'critical' && !a.acknowledged),
     [alerts]
@@ -113,13 +141,11 @@ export default function DigitalTwinDashboard() {
   }, [machines])
 
   const handleAcknowledgeAlert = (id: string) => {
-    setAlerts(prev => prev.map(a => 
-      a.id === id ? { ...a, acknowledged: true } : a
-    ))
+    setAcknowledgedAlertIds(prev => new Set(prev).add(id))
   }
 
   const handleDismissAlert = (id: string) => {
-    setAlerts(prev => prev.filter(a => a.id !== id))
+    setHiddenAlertIds(prev => new Set(prev).add(id))
   }
 
   const handleSelectMachine = (id: string) => {
@@ -363,7 +389,7 @@ export default function DigitalTwinDashboard() {
                                 >
                                   <div>
                                     <div className="font-medium text-sm">{machine?.name || 'Unknown'}</div>
-                                    <div className="text-xs text-muted-foreground">{task.title}</div>
+                                    <div className="text-xs text-muted-foreground capitalize">{task.type}</div>
                                   </div>
                                   <div className="text-right">
                                     <div className="text-xs text-primary font-medium">
@@ -537,6 +563,8 @@ export default function DigitalTwinDashboard() {
                   <MaintenanceBoard
                     machines={activeMachines}
                     onMachineSelect={handleSelectMachine}
+                    focusedMachineId={focusedMachineId}
+                    onFocusClear={() => setFocusedMachineId(null)}
                   />
                 </TabsContent>
               </Tabs>
