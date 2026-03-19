@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useMemo, useCallback } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { OrbitControls, Html, Environment, Float, useGLTF, useAnimations } from '@react-three/drei'
+import { OrbitControls, Html, Environment, Float, useGLTF, useAnimations, Center, Clone } from '@react-three/drei'
 import { Machine, MachineComponent, generateSensorHistoryForHealth } from '@/lib/data'
 import * as THREE from 'three'
 import { Button } from '@/components/ui/button'
@@ -525,6 +525,44 @@ interface DraggableMachineProps {
   orbitRef?: React.RefObject<any>
 }
 
+// Loads and auto-scales the GLTF model for the factory floor view
+function DraggableMachineModel({ machine, isDragging, isProblem, statusColor }: { machine: Machine, isDragging: boolean, isProblem: boolean, statusColor: string }) {
+  const modelUrl = useMemo(() => {
+    if (machine.id.includes('machine-1')) return '/models/machine1.glb'
+    if (machine.id.includes('machine-2')) return '/models/machine2.glb'
+    if (machine.id.includes('machine-3')) return '/models/machine3.glb'
+    return '/models/machine1.glb'
+  }, [machine.id])
+
+  const { scene } = useGLTF(modelUrl)
+
+  const emissiveColor = isProblem && !isDragging ? '#ef4444' : (isDragging ? '#1d4ed8' : '#000000')
+  const emissiveIntensity = isProblem ? 0.4 : (isDragging ? 0.3 : 0)
+
+  return (
+    <Center 
+      onCentered={({ container, width, height, depth }) => {
+        const maxDim = Math.max(width, height, depth) || 1
+        const scale = 1.2 / maxDim
+        container.scale.set(scale, scale, scale)
+      }}
+    >
+      <Clone 
+        object={scene} 
+        inject={
+          <meshStandardMaterial 
+            color={isDragging ? '#60a5fa' : statusColor} 
+            metalness={0.5} 
+            roughness={0.4} 
+            emissive={emissiveColor}
+            emissiveIntensity={emissiveIntensity}
+          />
+        } 
+      />
+    </Center>
+  )
+}
+
 function DraggableMachine({
   machine, x, z, currentStatus, currentRul, isProblem, getStatusColor,
   isEditMode, onMachineSelect, onRemoveMachine,
@@ -620,28 +658,44 @@ function DraggableMachine({
         rotationIntensity={0}
         floatIntensity={isProblem ? 0.2 : 0}
       >
-        <mesh
+        <group
           position={[0, 0.3, 0]}
-          castShadow
           onClick={(e) => {
             if (isEditMode || draggingId.current === machine.id) { e.stopPropagation(); return }
             e.stopPropagation()
             onMachineSelect?.(machine.id)
           }}
         >
-          <boxGeometry args={[1, 0.8, 0.7]} />
-          <meshStandardMaterial
-            color={isDragging ? '#60a5fa' : statusColor}
-            metalness={0.5}
-            roughness={0.4}
-            emissive={isProblem && !isDragging ? '#ef4444' : (isDragging ? '#1d4ed8' : '#000000')}
-            emissiveIntensity={isProblem ? 0.4 : (isDragging ? 0.3 : 0)}
+          <mesh visible={false}>
+            <boxGeometry args={[1.2, 1.2, 1.2]} />
+            <meshBasicMaterial transparent opacity={0} />
+          </mesh>
+          
+          <DraggableMachineModel 
+            machine={machine} 
+            isDragging={isDragging} 
+            isProblem={isProblem} 
+            statusColor={statusColor} 
           />
-        </mesh>
+
+          { (isDragging || isProblem) && (
+            <mesh>
+              <boxGeometry args={[1.3, 1.3, 1.3]} />
+              <meshStandardMaterial 
+                color={isDragging ? '#60a5fa' : '#ef4444'} 
+                transparent 
+                opacity={0.3} 
+                emissive={isDragging ? '#1d4ed8' : '#ef4444'}
+                emissiveIntensity={0.5}
+                wireframe
+              />
+            </mesh>
+          )}
+        </group>
       </Float>
 
       {/* Status indicator light */}
-      <mesh position={[0, 0.85, 0]}>
+      <mesh position={[0, 1.1, 0]}>
         <sphereGeometry args={[0.08, 16, 16]} />
         <meshStandardMaterial
           color={statusColor}
@@ -652,7 +706,7 @@ function DraggableMachine({
 
       {/* Label + Remove button */}
       <Html
-        position={[0, 1.4, 0]}
+        position={[0, 1.5, 0]}
         center
         distanceFactor={10}
         style={{ pointerEvents: isEditMode ? 'auto' : 'none', userSelect: 'none' }}
@@ -741,15 +795,25 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
 
   useEffect(() => {
     if (scene) {
+      // Reset position and scale to calculate the true original bounding box
+      scene.position.set(0, 0, 0)
+      scene.scale.set(1, 1, 1)
+      scene.updateMatrixWorld(true)
+
       const box = new THREE.Box3().setFromObject(scene)
       const center = box.getCenter(new THREE.Vector3())
       const size = box.getSize(new THREE.Vector3())
-      const maxDim = Math.max(size.x, size.y, size.z)
+      const maxDim = Math.max(size.x, size.y, size.z) || 1
       const scale = 2.5 / maxDim
-      scene.position.x = -center.x
-      scene.position.y = -center.y
-      scene.position.z = -center.z
+      
+      // Apply correct centered and scaled position
       scene.scale.set(scale, scale, scale)
+      scene.position.set(
+        -center.x * scale,
+        -center.y * scale,
+        -center.z * scale
+      )
+      scene.updateMatrixWorld(true)
     }
   }, [scene])
 
@@ -757,10 +821,14 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
     e.stopPropagation()
     if (!isExploded) setIsExploded(true)
     const clickedMeshName = e.object.name || ''
-    const matched = machine.components.find(c => 
-      clickedMeshName.toLowerCase().includes(c.name.toLowerCase()) || 
-      c.name.toLowerCase().includes(clickedMeshName.toLowerCase())
-    )
+    
+    const matched = clickedMeshName ? machine.components.find(c => {
+      const cName = c.name.toLowerCase()
+      const clickName = clickedMeshName.toLowerCase()
+      if (cName.length < 3) return false
+      return clickName.includes(cName) || (clickName.length >= 3 && cName.includes(clickName))
+    }) : undefined
+
     if (matched) {
       onComponentSelect(matched)
     } else {
@@ -783,11 +851,19 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
     if (scene) {
       scene.traverse((child: any) => {
         if (child.isMesh) {
-          const isSelected = selectedComponent && (
-            child.name.toLowerCase().includes(selectedComponent.name.toLowerCase()) ||
-            selectedComponent.name.toLowerCase().includes(child.name.toLowerCase()) ||
-            child.uuid === selectedComponent.id
-          )
+          let isSelected = false
+          if (selectedComponent) {
+            if (child.uuid === selectedComponent.id) {
+              isSelected = true
+            } else if (child.name && selectedComponent.name) {
+              const cName = child.name.toLowerCase()
+              const sName = selectedComponent.name.toLowerCase()
+              if (sName.length >= 3 && cName.includes(sName)) {
+                isSelected = true
+              }
+            }
+          }
+
           if (isSelected) {
             if (!child.userData.originalMaterial) {
               child.userData.originalMaterial = child.material
@@ -810,7 +886,7 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
   }, [selectedComponent, scene])
 
   return (
-    <group ref={groupRef} position={[0, 0.8, 0]}>
+    <group ref={groupRef} position={[0, -0.5, 0]}>
       <primitive 
         object={scene} 
         onClick={handleClick}
