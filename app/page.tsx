@@ -31,6 +31,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import {
   Factory,
   Bot,
   Activity,
@@ -229,7 +234,7 @@ export default function DigitalTwinDashboard() {
               </div>
               <div>
                 <h1 className="font-semibold text-lg">
-                  {selectedMachine ? selectedMachine.name : 'Digital Twin Command Center'}
+                  {selectedMachine ? selectedMachine.name : <span className="text-primary font-bold">AntiFault</span>}
                 </h1>
                 <p className="text-xs text-muted-foreground">
                   {selectedMachine
@@ -256,25 +261,62 @@ export default function DigitalTwinDashboard() {
               </span>
             </div>
 
-            {/* Alerts Badge */}
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(
-                'relative',
-                criticalAlerts.length > 0 && 'text-destructive'
-              )}
-            >
-              <Bell className={cn(
-                'w-5 h-5',
-                criticalAlerts.length > 0 && 'animate-pulse'
-              )} />
-              {criticalAlerts.length > 0 && (
-                <span className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center">
-                  {criticalAlerts.length}
-                </span>
-              )}
-            </Button>
+            {/* Alerts Popover */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    'relative',
+                    criticalAlerts.length > 0 && 'text-destructive'
+                  )}
+                >
+                  <Bell className={cn(
+                    'w-5 h-5',
+                    criticalAlerts.length > 0 && 'animate-pulse'
+                  )} />
+                  {alerts.length > 0 && (
+                    <span className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-destructive-foreground rounded-full text-[10px] flex items-center justify-center border-2 border-background font-bold">
+                      {alerts.length}
+                    </span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[420px] p-0" align="end">
+                <div className="p-4 border-b border-border bg-muted/20">
+                  <h3 className="font-semibold flex items-center gap-2">
+                    <Bell className="w-4 h-4 text-primary" />
+                    Alert Notifications
+                    {alerts.length > 0 && (
+                      <span className="ml-auto text-[10px] bg-destructive/10 text-destructive px-2 py-0.5 rounded-full uppercase tracking-wider font-bold">
+                        {alerts.length} New
+                      </span>
+                    )}
+                  </h3>
+                </div>
+                <div className="max-h-[400px] p-2">
+                  <AlertPanel 
+                    alerts={alerts}
+                    onAcknowledge={handleAcknowledgeAlert}
+                    onDismiss={handleDismissAlert}
+                    onAlertClick={handleAlertClick}
+                  />
+                </div>
+                {alerts.length > 0 && (
+                  <div className="p-2 border-t border-border bg-muted/10 text-center">
+                    <button 
+                      onClick={() => {
+                        setAcknowledgedAlertIds(new Set([...acknowledgedAlertIds, ...alerts.map(a => a.id)]))
+                      }}
+                      className="text-xs text-muted-foreground hover:text-primary transition-colors font-medium"
+                    >
+                      Acknowledge All
+                    </button>
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
 
 
 
@@ -656,19 +698,31 @@ export default function DigitalTwinDashboard() {
               {/* Tabbed Content */}
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList className="grid grid-cols-4 w-full max-w-[600px]">
-                  <TabsTrigger value="diagnostics" className="gap-2">
+                  <TabsTrigger 
+                    value="diagnostics" 
+                    className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary"
+                  >
                     <Activity className="w-4 h-4" />
                     <span className="hidden sm:inline">Diagnostics</span>
                   </TabsTrigger>
-                  <TabsTrigger value="maintenance" className="gap-2">
+                  <TabsTrigger 
+                    value="maintenance" 
+                    className="gap-2 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-500"
+                  >
                     <Wrench className="w-4 h-4" />
                     <span className="hidden sm:inline">Maintenance</span>
                   </TabsTrigger>
-                  <TabsTrigger value="simulation" className="gap-2">
+                  <TabsTrigger 
+                    value="simulation" 
+                    className="gap-2 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-500"
+                  >
                     <Play className="w-4 h-4" />
                     <span className="hidden sm:inline">Simulation</span>
                   </TabsTrigger>
-                  <TabsTrigger value="upgrades" className="gap-2">
+                  <TabsTrigger 
+                    value="upgrades" 
+                    className="gap-2 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-400"
+                  >
                     <Lightbulb className="w-4 h-4" />
                     <span className="hidden sm:inline">Upgrades</span>
                   </TabsTrigger>

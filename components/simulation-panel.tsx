@@ -200,12 +200,31 @@ export function SimulationPanel({ machine, machines = [], isFleetView = false }:
       </p>
 
       {/* Delay Slider */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <span className="text-base">Delay maintenance by:</span>
-          <span className="text-2xl font-bold text-primary">{daysToDelay} days</span>
+      <div className="space-y-4 bg-muted/20 p-4 rounded-lg border border-border">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <span className="text-base font-medium">Delay maintenance by:</span>
+          <span className={cn(
+            "text-2xl font-bold transition-colors",
+            daysToDelay <= 10 ? 'text-success' :
+            daysToDelay <= 20 ? 'text-warning' :
+            'text-destructive'
+          )}>
+            {daysToDelay} days
+          </span>
         </div>
-        <div className="px-1">
+
+        <div className="text-sm font-medium">
+          {daysToDelay <= 10 && <span className="text-success flex items-center gap-1"><ShieldCheck className="w-4 h-4"/> Low Risk - Minimal additional degradation</span>}
+          {daysToDelay > 10 && daysToDelay <= 20 && <span className="text-warning flex items-center gap-1"><AlertTriangle className="w-4 h-4"/> Moderate Risk - Accelerated wear and increased costs</span>}
+          {daysToDelay > 20 && <span className="text-destructive flex items-center gap-1"><ShieldAlert className="w-4 h-4"/> Critical Risk - High likelihood of unplanned downtime</span>}
+        </div>
+
+        <div className={cn(
+          "px-1 py-4 transition-all duration-300",
+          daysToDelay <= 10 ? "[&_[data-slot=slider-range]]:bg-success [&_[data-slot=slider-thumb]]:border-success focus-visible:[&_[data-slot=slider-thumb]]:ring-success/50" :
+          daysToDelay <= 20 ? "[&_[data-slot=slider-range]]:bg-warning [&_[data-slot=slider-thumb]]:border-warning focus-visible:[&_[data-slot=slider-thumb]]:ring-warning/50" :
+          "[&_[data-slot=slider-range]]:bg-destructive [&_[data-slot=slider-thumb]]:border-destructive focus-visible:[&_[data-slot=slider-thumb]]:ring-destructive/50"
+        )}>
           <Slider
             value={[daysToDelay]}
             onValueChange={(value) => setDaysToDelay(value[0])}
@@ -214,8 +233,9 @@ export function SimulationPanel({ machine, machines = [], isFleetView = false }:
             step={1}
             className="w-full"
           />
-          <div className="flex justify-between mt-2 text-sm text-muted-foreground">
+          <div className="flex justify-between mt-3 text-xs font-medium text-muted-foreground">
             <span>1 day</span>
+            <span>15 days</span>
             <span>30 days</span>
           </div>
         </div>

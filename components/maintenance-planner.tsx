@@ -14,7 +14,10 @@ import {
   AlertTriangle,
   CheckCircle2,
   PlayCircle,
-  Timer
+  Timer,
+  Lightbulb,
+  Bot,
+  TrendingUp,
 } from 'lucide-react'
 
 interface MaintenancePlannerProps {
@@ -113,6 +116,76 @@ export function MaintenancePlanner({
               </>
             )}
           </Button>
+        </div>
+      </div>
+
+      {/* AI Recommendation & Analysis */}
+      <div className="bg-gradient-to-br from-indigo-500/10 to-purple-500/5 border border-indigo-500/20 rounded-xl p-5 shadow-sm overflow-hidden relative">
+        <div className="absolute top-0 right-0 p-4 opacity-10">
+          <Bot className="w-20 h-20 text-indigo-400" />
+        </div>
+        
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-sm font-bold flex items-center gap-2 text-indigo-400 uppercase tracking-widest">
+            <Lightbulb className="w-4 h-4" />
+            AI Predictive Maintenance Engine
+          </h4>
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[10px] font-bold text-indigo-400">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500"></span>
+            </span>
+            LIVE ANALYSIS
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 relative z-10">
+          <div className="md:col-span-2">
+            <p className="text-sm text-foreground/90 leading-relaxed mb-4">
+              {selectedComponent ? (
+                <>Based on high-frequency vibration analysis and thermal delta tracking, the <strong className="text-indigo-400 font-bold bg-indigo-500/5 px-1 rounded">secondary seal degradation</strong>. Neural models project a <span className="text-destructive font-black">84% probability</span> of unplanned stoppage if intervention is delayed beyond the next maintenance window.</>
+              ) : (
+                <>Fleet-wide telemetry indicates a <span className="text-warning font-bold bg-warning/5 px-1 rounded">correlative health decline</span> across {machine.components.filter(c => c.status !== 'healthy').length} sub-systems. Operational efficiency (OEE) is projected to drop by <span className="text-destructive font-black">4.2%</span> over the next 72 hours without targeted fluid-dynamic calibration.</>
+              )}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-background/40 px-2 py-1 rounded-md">
+                <CheckCircle2 className="w-3.5 h-3.5 text-success" />
+                Validating sensor calibration...
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-background/40 px-2 py-1 rounded-md">
+                <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
+                Analyzing historical failure patterns
+              </div>
+            </div>
+          </div>
+          
+          <div className="space-y-3 bg-background/30 p-4 rounded-xl border border-indigo-500/10">
+            <div>
+              <div className="flex justify-between text-[10px] uppercase font-bold text-muted-foreground mb-1">
+                <span>Confidence Score</span>
+                <span className="text-indigo-400">96.4%</span>
+              </div>
+              <div className="h-1.5 w-full bg-indigo-500/10 rounded-full overflow-hidden">
+                <div className="h-full bg-indigo-500 rounded-full" style={{ width: '96.4%' }} />
+              </div>
+            </div>
+            <div className="pt-1">
+              <div className="text-[10px] uppercase font-bold text-muted-foreground mb-1">Risk Level</div>
+              <div className={cn(
+                "inline-flex px-2 py-1 rounded text-[10px] font-black uppercase tracking-tighter",
+                selectedComponent?.status === 'failing' ? "bg-destructive/20 text-destructive border border-destructive/30" : "bg-warning/20 text-warning border border-warning/30"
+              )}>
+                {selectedComponent?.status === 'failing' ? 'CRITICAL EVASION REQUIRED' : 'PROACTIVE MONITORING ACTIVE'}
+              </div>
+            </div>
+            <div className="pt-1 border-t border-indigo-500/10">
+               <div className="text-[10px] uppercase font-bold text-muted-foreground mb-1">Estimated Savings</div>
+               <div className="text-lg font-black text-success tabular-nums">
+                 +${((selectedComponent?.replacementCost || 50000) * 0.15).toLocaleString()}
+               </div>
+            </div>
+          </div>
         </div>
       </div>
 

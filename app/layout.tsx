@@ -8,8 +8,8 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'Digital Twin Command Center | Predictive Maintenance Platform',
-  description: 'Industrial IoT Digital Twin platform for predictive maintenance with 3D visualization, AI-powered diagnostics, and real-time machine health monitoring.',
+  title: 'AntiFault | Predictive Maintenance Platform',
+  description: 'Industrial IoT AntiFault platform for predictive maintenance with 3D visualization, AI-powered diagnostics, and real-time machine health monitoring.',
   generator: 'v0.app',
   icons: {
     icon: [

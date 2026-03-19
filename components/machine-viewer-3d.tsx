@@ -868,7 +868,22 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
     if (scene) {
       scene.traverse((child: any) => {
         if (child.isMesh) {
+          if (!child.userData.originalMaterial) {
+            child.userData.originalMaterial = child.material
+          }
+
           let isSelected = false
+          let matchedComponent: MachineComponent | undefined
+
+          if (child.name) {
+            const cName = child.name.toLowerCase()
+            matchedComponent = machine.components.find(c => {
+              const sName = c.name.toLowerCase()
+              if (sName.length < 3) return false
+              return cName.includes(sName) || (cName.length >= 3 && sName.includes(cName))
+            })
+          }
+
           if (selectedComponent) {
             if (child.uuid === selectedComponent.id) {
               isSelected = true
@@ -882,9 +897,6 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
           }
 
           if (isSelected) {
-            if (!child.userData.originalMaterial) {
-              child.userData.originalMaterial = child.material
-            }
             child.material = new THREE.MeshStandardMaterial({
               color: '#3b82f6',
               emissive: '#1d4ed8',
@@ -894,13 +906,33 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
               transparent: true,
               opacity: 0.9
             })
-          } else if (child.userData.originalMaterial) {
+          } else if (isExploded && matchedComponent) {
+            let color = '#ef4444' // red
+            let emissive = '#b91c1c'
+            if (matchedComponent.health >= 80) {
+              color = '#22c55e' // green
+              emissive = '#15803d'
+            } else if (matchedComponent.health >= 60) {
+              color = '#eab308' // orange/yellow
+              emissive = '#a16207'
+            }
+
+            child.material = new THREE.MeshStandardMaterial({
+              color: color,
+              emissive: emissive,
+              emissiveIntensity: 0.6,
+              metalness: 0.3,
+              roughness: 0.4,
+              transparent: true,
+              opacity: 0.85
+            })
+          } else {
             child.material = child.userData.originalMaterial
           }
         }
       })
     }
-  }, [selectedComponent, scene])
+  }, [selectedComponent, scene, isExploded, machine.components])
 
   return (
     <group ref={groupRef} position={[0, -0.5, 0]}>

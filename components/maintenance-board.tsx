@@ -15,6 +15,7 @@ import {
   X,
   Undo2,
   Wrench,
+  Lightbulb,
 } from 'lucide-react'
 import React from 'react'
 
@@ -358,15 +359,21 @@ export function MaintenanceBoard({ machines, onMachineSelect, focusedMachineId, 
                                   />
                                 </div>
                               </div>
+                              <div className="mb-1 mt-2">
+                                <label className="text-xs text-muted-foreground font-medium block">Technician</label>
+                              </div>
                               <div>
-                                <label className="text-xs text-muted-foreground font-medium mb-1 block">Technician</label>
-                                <input
-                                  type="text"
-                                  placeholder="Assign technician..."
+                                <select
                                   value={scheduleForm.technician}
                                   onChange={e => setScheduleForm({ ...scheduleForm, technician: e.target.value })}
-                                  className="w-full bg-muted border border-border rounded-md px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder:text-muted-foreground/50"
-                                />
+                                  className="w-full bg-muted border border-border rounded-md px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 appearance-none cursor-pointer"
+                                >
+                                  <option value="" disabled>Select technician...</option>
+                                  <option value="Sarah Connor">🟢 Sarah Connor (Available)</option>
+                                  <option value="Marcus Wright">🟢 Marcus Wright (Available)</option>
+                                  <option value="John Doe">🟡 John Doe (On shift in 2h)</option>
+                                  <option value="Mike Smith">🔴 Mike Smith (Busy)</option>
+                                </select>
                               </div>
                               <div>
                                 <label className="text-xs text-muted-foreground font-medium mb-1 block">Notes</label>
@@ -375,9 +382,10 @@ export function MaintenanceBoard({ machines, onMachineSelect, focusedMachineId, 
                                   placeholder="Optional notes..."
                                   value={scheduleForm.notes}
                                   onChange={e => setScheduleForm({ ...scheduleForm, notes: e.target.value })}
-                                  className="w-full bg-muted border border-border rounded-md px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder:text-muted-foreground/50"
+                                  className="w-full bg-muted border border-border rounded-md px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 mb-2 ml-0"
                                 />
                               </div>
+
                               <div className="flex flex-col xl:flex-row gap-1.5 pt-1">
                                 <Button
                                   size="sm"
@@ -400,26 +408,69 @@ export function MaintenanceBoard({ machines, onMachineSelect, focusedMachineId, 
                                   <X className="w-3.5 h-3.5" />
                                 </Button>
                               </div>
+
+                              <div className="mt-3 pt-3 border-t border-border/30">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="w-full h-10 gap-2 text-xs font-bold border-indigo-500/30 bg-indigo-500/5 hover:bg-indigo-500/10 text-indigo-400 group shadow-[0_0_15px_rgba(99,102,241,0.05)]"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setScheduleForm({ 
+                                      ...scheduleForm, 
+                                      date: new Date(Date.now() + 86400000).toISOString().split('T')[0], // tomorrow
+                                      time: '14:30',
+                                      technician: 'Sarah Connor',
+                                      notes: 'AI identified optimal maintenance window with minimal production impact.'
+                                    })
+                                  }}
+                                >
+                                  <div className="p-1 rounded bg-indigo-500/20 group-hover:scale-110 transition-transform">
+                                    <Lightbulb className="w-4 h-4" />
+                                  </div>
+                                  AI Optimize Entire Schedule
+                                </Button>
+                              </div>
                             </div>
                           ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="flex-1 h-8 text-xs gap-1.5 border-white/15"
-                              onClick={() => {
-                                setScheduleForm({
-                                  machineId: machine.id,
-                                  date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-                                  time: '09:00',
-                                  technician: '',
-                                  notes: '',
-                                })
-                                setHighlightId(machine.id)
-                              }}
-                            >
-                              <Plus className="w-3 h-3" />
-                              Schedule
-                            </Button>
+                            <div className="flex flex-col gap-2 w-full mt-1">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full h-8 text-xs gap-1.5 border-white/15"
+                                onClick={() => {
+                                  setScheduleForm({
+                                    machineId: machine.id,
+                                    date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+                                    time: '09:00',
+                                    technician: '',
+                                    notes: '',
+                                  })
+                                  setHighlightId(machine.id)
+                                }}
+                              >
+                                <Plus className="w-3 h-3" />
+                                Schedule
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full h-8 text-[10px] gap-1.5 border-indigo-500/30 bg-indigo-500/5 hover:bg-indigo-500/10 text-indigo-400 font-bold group shadow-[0_0_10px_rgba(99,102,241,0.05)]"
+                                onClick={() => {
+                                  setScheduleForm({
+                                    machineId: machine.id,
+                                    date: new Date(Date.now() + 86400000).toISOString().split('T')[0], // tomorrow
+                                    time: '14:30',
+                                    technician: 'Sarah Connor',
+                                    notes: 'AI suggested optimal window based on low production duty cycle.'
+                                  })
+                                  setHighlightId(machine.id)
+                                }}
+                              >
+                                <Lightbulb className="w-3 h-3 group-hover:fill-indigo-400/20 transition-colors" />
+                                AI Suggest
+                              </Button>
+                            </div>
                           )}
                         </>
                       )}
