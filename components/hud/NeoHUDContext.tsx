@@ -1,58 +1,131 @@
-'use client'
+"use client";
 
-import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { ContextMemory } from '@/lib/neo-engine';
+import React, { createContext, useContext, useState, ReactNode } from "react";
+import { ContextMemory } from "@/lib/neo-engine";
 
 export type NeoState = "idle" | "listening" | "processing" | "speaking" | "alert";
+
+export interface SystemHealth {
+  cpu: number;
+  ram: number;
+  disk: number;
+  network: string;
+}
+
+export interface Telemetry {
+  model: string;
+  inferenceMode: string;
+  tokensGenerated: number;
+  tokensPerSec: number;
+  latencyMs: number;
+  confidence: number;
+}
+
+export interface AIAnalysis {
+  intent: string;
+  actionPlan: string[];
+}
 
 interface NeoHUDContextType {
   neoState: NeoState;
   setNeoState: (state: NeoState) => void;
+  systemHealth: SystemHealth;
+  setSystemHealth: (health: SystemHealth) => void;
+  telemetry: Telemetry;
+  setTelemetry: (t: Telemetry) => void;
+  analysis: AIAnalysis | null;
+  setAnalysis: (a: AIAnalysis | null) => void;
+  commandLogs: string[];
+  addLog: (log: string) => void;
+  currentResponseToken: string;
+  setCurrentResponseToken: (token: string) => void;
   isHUDVisible: boolean;
-  setIsHUDVisible: (visible: boolean) => void;
+  setHUDVisible: (v: boolean) => void;
   isChatOpen: boolean;
-  setIsChatOpen: (open: boolean) => void;
+  setChatOpen: (v: boolean) => void;
+  currentIntent: string;
+  setCurrentIntent: (intent: string) => void;
   activeUIModules: string[];
   setActiveUIModules: (modules: string[]) => void;
   activeContextData: any;
   setActiveContextData: (data: any) => void;
   contextMemory: ContextMemory;
-  setContextMemory: React.Dispatch<React.SetStateAction<ContextMemory>>;
+  setContextMemory: (memory: ContextMemory) => void;
   focusedMachine: string | null;
-  setFocusedMachine: (machine: string | null) => void;
+  setFocusedMachine: (m: string | null) => void;
   highlightedKeyword: string | null;
-  setHighlightedKeyword: (keyword: string | null) => void;
-  analysis: { intent: string, actionPlan: string[] } | null;
-  setAnalysis: (analysis: any) => void;
+  setHighlightedKeyword: (k: string | null) => void;
 }
 
-const defaultContextMemory: ContextMemory = { history: [] };
+const defaultTelemetry: Telemetry = {
+  model: "llama2",
+  inferenceMode: "Local",
+  tokensGenerated: 0,
+  tokensPerSec: 0,
+  latencyMs: 0,
+  confidence: 0,
+};
+
+const defaultSystemHealth: SystemHealth = {
+  cpu: 12,
+  ram: 45,
+  disk: 55,
+  network: "Stable",
+};
 
 const NeoHUDContext = createContext<NeoHUDContextType | undefined>(undefined);
 
 export function NeoHUDProvider({ children }: { children: ReactNode }) {
   const [neoState, setNeoState] = useState<NeoState>("idle");
-  const [isHUDVisible, setIsHUDVisible] = useState(false);
-  const [isChatOpen, setIsChatOpen] = useState(false);
-  const [activeUIModules, setActiveUIModules] = useState<string[]>([]);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth>(defaultSystemHealth);
+  const [telemetry, setTelemetry] = useState<Telemetry>(defaultTelemetry);
+  const [analysis, setAnalysis] = useState<AIAnalysis | null>(null);
+  const [commandLogs, setCommandLogs] = useState<string[]>([]);
+  const [currentResponseToken, setCurrentResponseToken] = useState<string>("");
+  const [isHUDVisible, setHUDVisible] = useState(false);
+  const [isChatOpen, setChatOpen] = useState(false);
+  const [currentIntent, setCurrentIntent] = useState<string>("system_overview");
+  const [activeUIModules, setActiveUIModules] = useState<string[]>(["SYSTEM_OVERVIEW"]);
   const [activeContextData, setActiveContextData] = useState<any>(null);
-  const [contextMemory, setContextMemory] = useState<ContextMemory>(defaultContextMemory);
+  const [contextMemory, setContextMemory] = useState<ContextMemory>({ history: [] });
   const [focusedMachine, setFocusedMachine] = useState<string | null>(null);
   const [highlightedKeyword, setHighlightedKeyword] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<any>(null);
+
+  const addLog = (log: string) => {
+    setCommandLogs((prev) => [log, ...prev].slice(0, 10)); // Keep last 10 logs
+  };
 
   return (
     <NeoHUDContext.Provider
       value={{
-        neoState, setNeoState,
-        isHUDVisible, setIsHUDVisible,
-        isChatOpen, setIsChatOpen,
-        activeUIModules, setActiveUIModules,
-        activeContextData, setActiveContextData,
-        contextMemory, setContextMemory,
-        focusedMachine, setFocusedMachine,
-        highlightedKeyword, setHighlightedKeyword,
-        analysis, setAnalysis
+        neoState,
+        setNeoState,
+        systemHealth,
+        setSystemHealth,
+        telemetry,
+        setTelemetry,
+        analysis,
+        setAnalysis,
+        commandLogs,
+        addLog,
+        currentResponseToken,
+        setCurrentResponseToken,
+        isHUDVisible,
+        setHUDVisible,
+        isChatOpen,
+        setChatOpen,
+        currentIntent,
+        setCurrentIntent,
+        activeUIModules,
+        setActiveUIModules,
+        activeContextData,
+        setActiveContextData,
+        contextMemory,
+        setContextMemory,
+        focusedMachine,
+        setFocusedMachine,
+        highlightedKeyword,
+        setHighlightedKeyword,
       }}
     >
       {children}
@@ -63,7 +136,7 @@ export function NeoHUDProvider({ children }: { children: ReactNode }) {
 export function useNeoHUD() {
   const context = useContext(NeoHUDContext);
   if (context === undefined) {
-    throw new Error('useNeoHUD must be used within a NeoHUDProvider');
+    throw new Error("useNeoHUD must be used within a NeoHUDProvider");
   }
   return context;
 }

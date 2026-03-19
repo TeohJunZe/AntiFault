@@ -1,130 +1,138 @@
-'use client'
+"use client";
 
-import React from 'react';
-import { useNeoHUD } from './NeoHUDContext';
-import { motion, AnimatePresence } from 'framer-motion';
-import { AlertTriangle, Activity, AlertCircle, TrendingDown, Server, Cpu, HardDrive } from 'lucide-react';
-import { Machine } from '@/lib/data';
-
-// --- Base Panel Wrapper ---
-function HUDPanel({ title, children, className = '', highlight = false }: { title: string, children: React.ReactNode, className?: string, highlight?: boolean }) {
-  return (
-    <div className={`bg-[#020617]/70 backdrop-blur-xl border ${highlight ? 'border-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.2)]' : 'border-cyan-900/50 shadow-[0_0_20px_rgba(6,182,212,0.1)]'} rounded-xl p-5 relative overflow-hidden ${className}`}>
-      {/* Decorative corners */}
-      <div className={`absolute top-0 left-0 w-3 h-3 border-t-[2px] border-l-[2px] ${highlight ? 'border-red-500' : 'border-cyan-500'}`} />
-      <div className={`absolute top-0 right-0 w-3 h-3 border-t-[2px] border-r-[2px] ${highlight ? 'border-red-500' : 'border-cyan-500'}`} />
-      <div className={`absolute bottom-0 left-0 w-3 h-3 border-b-[2px] border-l-[2px] ${highlight ? 'border-red-500' : 'border-cyan-500'}`} />
-      <div className={`absolute bottom-0 right-0 w-3 h-3 border-b-[2px] border-r-[2px] ${highlight ? 'border-red-500' : 'border-cyan-500'}`} />
-      
-      <div className="flex items-center gap-2 border-b border-white/5 pb-2 mb-4">
-        <h3 className={`text-xs font-bold uppercase tracking-widest ${highlight ? 'text-red-400' : 'text-cyan-400'}`}>
-          {title}
-        </h3>
-      </div>
-      {children}
-    </div>
-  )
-}
-
-// --- Specific Panels ---
+import React from "react";
+import { useNeoHUD } from "./NeoHUDContext";
+import { AlertTriangle, Activity, Zap, ActivitySquare } from "lucide-react";
 
 export function StatusPanel({ data }: { data: any }) {
-  if (!data) return null;
-  const healthColor = data.healthIndex > 80 ? 'text-green-400' : data.healthIndex > 50 ? 'text-yellow-400' : 'text-red-500';
+  if (!data || !data.data) return null;
+  const { name, temperature, vibration, healthScore, status } = data.data;
 
   return (
-    <HUDPanel title="Machine Status">
-      <div className="space-y-4">
-        <div>
-          <div className="text-[10px] text-cyan-600 uppercase tracking-widest">Target ID</div>
-          <div className="text-xl font-mono text-white tracking-widest">{data.name}</div>
-        </div>
-        
-        <div className="grid grid-cols-2 gap-4">
-            <div className="bg-[#0f172a]/50 p-3 rounded-lg border border-cyan-950/50">
-              <div className="text-[10px] text-slate-500 uppercase tracking-widest">Health Index</div>
-              <div className={`text-2xl font-bold font-mono ${healthColor}`}>{data.healthIndex}%</div>
-            </div>
-            <div className="bg-[#0f172a]/50 p-3 rounded-lg border border-cyan-950/50">
-              <div className="text-[10px] text-slate-500 uppercase tracking-widest">RUL (Days)</div>
-              <div className="text-2xl font-bold font-mono text-white">{data.rul}</div>
-            </div>
-        </div>
-
-        {data.sensorHistory && data.sensorHistory.length > 0 && (
-          <div className="mt-2 text-xs font-mono text-cyan-200">
-             Temp: {data.sensorHistory[data.sensorHistory.length - 1].temperature.toFixed(1)}°C <br/>
-             Vib: {data.sensorHistory[data.sensorHistory.length - 1].vibration.toFixed(2)} mm/s
-          </div>
-        )}
+    <div className="glass-card bg-slate-900/60 p-5 rounded-2xl border border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.15)] backdrop-blur-xl w-80">
+      <div className="flex items-center justify-between mb-4 border-b border-cyan-500/20 pb-2">
+        <h2 className="text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent uppercase tracking-wider">{name}</h2>
+        <span className={`px-2 py-1 rounded text-[10px] uppercase font-bold tracking-wider ${
+          status === 'Critical' ? 'bg-red-500/20 text-red-500 border border-red-500/50' : 
+          status === 'Warning' ? 'bg-yellow-500/20 text-yellow-500 border border-yellow-500/50' : 
+          'bg-cyan-500/20 text-cyan-500 border border-cyan-500/50'
+        }`}>
+          {status}
+        </span>
       </div>
-    </HUDPanel>
+      <div className="space-y-3">
+        <div className="flex justify-between items-center text-sm">
+          <span className="text-slate-400 flex items-center gap-2"><Zap className="w-4 h-4 text-cyan-500"/> Temperature</span>
+          <span className="text-slate-100 font-mono font-medium">{temperature?.toFixed(1) || 0}°C</span>
+        </div>
+        <div className="flex justify-between items-center text-sm">
+          <span className="text-slate-400 flex items-center gap-2"><Activity className="w-4 h-4 text-cyan-500"/> Vibration</span>
+          <span className="text-slate-100 font-mono font-medium">{vibration?.toFixed(2) || 0} mm/s</span>
+        </div>
+        <div className="flex justify-between items-center text-sm">
+          <span className="text-slate-400 flex items-center gap-2"><ActivitySquare className="w-4 h-4 text-cyan-500"/> Health</span>
+          <span className="text-slate-100 font-mono font-medium">{healthScore}%</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function TrendGraph({ data }: { data: any }) {
+  // Simplistic representation if recharts is missing, using CSS for the wow factor
+  // In a real app we'd load Recharts here
+  return (
+    <div className="glass-card bg-slate-900/60 p-5 rounded-2xl border border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.15)] backdrop-blur-xl w-[400px]">
+       <h3 className="text-sm font-semibold text-cyan-400 mb-4 uppercase tracking-widest border-b border-cyan-500/20 pb-2">Diagnostic Trend Waveform</h3>
+       <div className="h-32 flex items-end justify-between gap-1">
+          {[40, 65, 50, 78, 85, 60, 90, 70, 80, 50].map((val, i) => (
+             <div 
+               key={i} 
+               className="w-full bg-gradient-to-t from-cyan-600 to-cyan-300 rounded-t-sm"
+               style={{ height: `${val}%`, opacity: 0.5 + (0.5 * (i/10)) }}
+             />
+          ))}
+       </div>
+    </div>
   );
 }
 
 export function AlertPanel({ data }: { data: any }) {
+  if (!data || !data.data) return null;
+  const { name, status } = data.data;
+
   return (
-    <HUDPanel title="CRITICAL ALERT" highlight>
-       <div className="flex items-start gap-4 animate-pulse">
-         <AlertTriangle className="w-8 h-8 text-red-500 shrink-0" />
-         <div>
-           <div className="text-red-400 font-bold tracking-widest uppercase mb-1">Anomaly Detected</div>
-           <div className="text-sm text-red-200/70 font-mono">
-             {data?.name || "Unknown"} is exhibiting critical failure patterns. Immediate maintenance required.
-           </div>
-         </div>
-       </div>
-    </HUDPanel>
+    <div className="glass-card bg-red-950/60 p-5 rounded-2xl border border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)] backdrop-blur-xl w-96 animate-pulse">
+      <div className="flex items-start gap-4">
+        <div className="p-3 bg-red-500/20 rounded-full">
+           <AlertTriangle className="w-8 h-8 text-red-500" />
+        </div>
+        <div>
+           <h3 className="text-base font-bold text-red-500 uppercase tracking-widest mb-1">Critical Anomaly</h3>
+           <p className="text-sm text-red-200">System <span className="font-bold text-white">{name}</span> is currently in <span className="font-bold text-white">{status}</span> status. Immediate action required to prevent catastrophic failure.</p>
+        </div>
+      </div>
+    </div>
   );
 }
 
 export function PredictionPanel({ data }: { data: any }) {
+  if (!data || !data.data) return null;
+  // Compute risk score or dummy prediction
+  const tempRisk = Math.max(0, data.data.temperature - 60) * 2;
+  const vibRisk = Math.max(0, data.data.vibration - 2.0) * 10;
+  const days = Math.max(1, Math.floor(10 - ((tempRisk + vibRisk) / 10)));
+  
   return (
-    <HUDPanel title="Predictive Analysis">
-       <div className="flex items-center gap-4">
-         <TrendingDown className="w-8 h-8 text-fuchsia-400 opacity-70" />
-         <div>
-            <div className="text-fuchsia-400 font-mono text-2xl font-bold">{data?.rul || '--'} DAYS</div>
-            <div className="text-xs text-fuchsia-200/50 uppercase tracking-widest">Estimated Time to Failure</div>
-         </div>
-       </div>
-    </HUDPanel>
+    <div className="glass-card bg-fuchsia-950/40 p-5 rounded-2xl border border-fuchsia-500/50 shadow-[0_0_25px_rgba(217,70,239,0.2)] backdrop-blur-xl w-80">
+      <h3 className="text-sm font-semibold text-fuchsia-400 mb-2 uppercase tracking-widest border-b border-fuchsia-500/20 pb-2">Predictive Analysis</h3>
+      <div className="flex flex-col gap-2">
+         <span className="text-3xl font-bold bg-gradient-to-br from-fuchsia-400 to-purple-600 bg-clip-text text-transparent">~{days} Days</span>
+         <span className="text-xs text-fuchsia-200 uppercase tracking-wider">Estimated Time to Failure</span>
+      </div>
+      <div className="mt-4 w-full h-1 bg-fuchsia-950 rounded overflow-hidden">
+         <div className="h-full bg-fuchsia-500" style={{ width: `${100 - (days * 10)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+export function CompareView({ data }: { data: any }) {
+  if (!data || !Array.isArray(data.data)) return null;
+
+  return (
+    <div className="flex gap-6 w-full max-w-4xl justify-center">
+      {data.data.map((machine: any) => (
+        <StatusPanel key={machine.id} data={{ data: machine }} />
+      ))}
+    </div>
   );
 }
 
 export function ErrorPanel() {
   return (
-    <HUDPanel title="System Error">
-       <div className="flex items-center gap-3 text-yellow-500">
-         <AlertCircle className="w-5 h-5" />
-         <span className="font-mono text-sm">Unable to resolve target parameters. Please specify machine.</span>
-       </div>
-    </HUDPanel>
+    <div className="glass-card bg-yellow-950/60 p-5 rounded-2xl border border-yellow-500/50 shadow-[0_0_20px_rgba(234,179,8,0.2)] backdrop-blur-xl flex items-center gap-3">
+       <AlertTriangle className="w-5 h-5 text-yellow-500 animate-pulse" />
+       <span className="text-sm font-medium text-yellow-200 tracking-wide">⚠ Unable to retrieve matching machine data or parameters in current context.</span>
+    </div>
   );
 }
 
-export function TrendGraph({ data }: { data: any }) {
-    return (
-        <HUDPanel title="Telemetry Stream">
-            <div className="h-24 flex items-end gap-1 opacity-80">
-                {Array.from({ length: 20 }).map((_, i) => (
-                    <div 
-                      key={i} 
-                      className="w-full bg-cyan-500/50 rounded-t-sm transition-all duration-300"
-                      style={{ height: `${Math.random() * 100}%` }}
-                    />
-                ))}
-            </div>
-        </HUDPanel>
-    );
-}
+export function AIExplanationPanel() {
+  const { analysis } = useNeoHUD();
+  if (!analysis) return null;
 
-// Map strings to actual components
-export const PANEL_MAP: Record<string, React.FC<{ data: any }>> = {
-  STATUS_PANEL: StatusPanel,
-  ALERT_PANEL: AlertPanel,
-  PREDICTION_PANEL: PredictionPanel,
-  ERROR_PANEL: ErrorPanel,
-  TREND_GRAPH: TrendGraph,
-  // others like COMPARE_VIEW can map to a combination
-};
+  return (
+    <div className="glass-card bg-slate-900/40 p-4 rounded-xl border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)] backdrop-blur-md w-72">
+      <h3 className="text-xs font-semibold text-blue-400 uppercase tracking-widest mb-2 border-b border-blue-500/20 pb-1">AI Reasoning</h3>
+      <div className="text-sm text-slate-300">
+         Detected Intent: <span className="font-mono text-cyan-300">{analysis.intent}</span>
+         <ul className="mt-2 text-xs text-slate-400 space-y-1 list-disc list-inside">
+            {analysis.actionPlan.map((step, i) => (
+               <li key={i}>{step}</li>
+            ))}
+         </ul>
+      </div>
+    </div>
+  );
+}

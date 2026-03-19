@@ -1,28 +1,66 @@
-'use client'
+"use client";
 
-import { useState, useRef, useEffect } from 'react'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  Bot,
-  Mic,
-  Send,
-  X,
-  MessageSquare,
-  AlertTriangle,
-  FileText,
-  Sparkles
-} from 'lucide-react'
-import { Machine, Alert, MaintenanceTask } from '@/lib/data'
-import { Switch } from '@/components/ui/switch'
-import { useNeoHUD } from '@/components/hud/NeoHUDContext'
+    Bot,
+    X,
+    Send,
+    Sparkles,
+    AlertTriangle,
+    FileText,
+    Volume2,
+    Mic,
+    Activity,
+    ChevronLeft,
+    Zap,
+    MessageSquare
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useNeoHUD } from "./hud/NeoHUDContext";
+import { Machine, Alert, MaintenanceTask } from '@/lib/data';
+import { streamNeoRequest } from "@/lib/ai-request-manager";
+
+// ─── TTS Helpers ────────────────────────────────────────────────
+function getPreferredVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined') return null;
+  const voices = window.speechSynthesis.getVoices();
+  return (
+    voices.find(v => v.name.includes('Google US English')) ||
+    voices.find(v => v.lang === 'en-US' && !v.localService) ||
+    voices.find(v => v.lang === 'en-US') ||
+    voices.find(v => v.lang.startsWith('en')) ||
+    null
+  );
+}
+
+function speakSentence(text: string) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text.trim()) return;
+  // Many browsers need a resume() before speak() to avoid stalled state
+  window.speechSynthesis.resume();
+  const utterance = new SpeechSynthesisUtterance(text.trim());
+  const voice = getPreferredVoice();
+  if (voice) utterance.voice = voice;
+  utterance.lang = 'en-US';
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+  window.speechSynthesis.speak(utterance);
+}
+
+// ─── Picovoice Access Key ───────────────────────────────────────
+const PICOVOICE_ACCESS_KEY = 
+  process.env.NEXT_PUBLIC_PORCUPINE_ACCESS_KEY || 
+  process.env.NEXT_PUBLIC_PICOVOICE_ACCESS_KEY || 
+  '';
 
 interface AIAssistantProps {
-  machines: Machine[]
-  alerts: Alert[]
-  tasks: MaintenanceTask[]
-  selectedMachine: Machine | null
-  onClose: () => void
+  machines: Machine[];
+  alerts: Alert[];
+  tasks: MaintenanceTask[];
+  selectedMachine: Machine | null;
+  // These are now handled primarily via context in the new UI
+  onClose?: () => void;
+  onMinimize?: () => void;
 }
 
 export function AIAssistant({
@@ -30,325 +68,569 @@ export function AIAssistant({
   alerts,
   tasks,
   selectedMachine,
-  onClose
+  onClose,
+  onMinimize
 }: AIAssistantProps) {
-  const { 
-    setNeoState, 
-    contextMemory, 
-    setContextMemory,
-    setActiveContextData,
-    setActiveUIModules 
-  } = useNeoHUD();
-
-  const [input, setInput] = useState('')
-  const [activeTab, setActiveTab] = useState<'qa' | 'alerts' | 'reports'>('qa')
-  const [heyNeoEnabled, setHeyNeoEnabled] = useState(false)
-  
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-
-  type Message = { role: 'user'|'assistant', content: string };
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  // Auto-scroll to bottom
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  const handleSubmit = async (e: React.FormEvent | null, textOverride?: string) => {
-    if (e) e.preventDefault();
-    const submitText = textOverride || input;
-    if (!submitText.trim() || isProcessing) return;
+    const { 
+        neoState, setNeoState, 
+        addLog, setHUDVisible, 
+        setCurrentResponseToken, 
+        setTelemetry, 
+        setAnalysis,
+        isChatOpen, setChatOpen,
+        setActiveUIModules,
+        setActiveContextData,
+        contextMemory, setContextMemory,
+        setFocusedMachine,
+        setHighlightedKeyword
+    } = useNeoHUD();
     
-    setInput('');
-    setIsProcessing(true);
-    setNeoState('processing');
+    const [activeTab, setActiveTab] = useState<"alerts" | "reports" | "qa">("qa");
+    const [input, setInput] = useState("");
+    const [messages, setMessages] = useState<{role: 'user' | 'assistant', content: string}[]>([
+        {
+            role: "assistant",
+            content: "Hello! I'm Neo, your AI factory assistant. I'm monitoring equipment health in real-time.",
+        },
+    ]);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [isListeningSTT, setIsListeningSTT] = useState(false);
+    const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
 
-    // 1. Add User Msg
-    setMessages(prev => [...prev, { role: 'user', content: submitText }]);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const recognitionRef = useRef<any>(null);
+    const porcupineRef = useRef<any>(null);
 
-    try {
-      // 2. Intent Parsing pipeline
-      const { parseIntent, updateContext, resolveData, mapIntentToUI } = await import('@/lib/neo-engine');
-      const intentOutput = await parseIntent(submitText, contextMemory);
-      const newMemory = updateContext(intentOutput, contextMemory);
-      setContextMemory(newMemory);
+    // Auto-scroll
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
 
-      // 3. Resolve Data & Map UI
-      const resolvedData = resolveData(intentOutput, machines);
-      setActiveContextData(resolvedData);
-      
-      const uiModules = mapIntentToUI(intentOutput, resolvedData);
-      setActiveUIModules(uiModules);
-      
-      // Update core state based on findings
-      if (uiModules.includes('ERROR_PANEL')) {
-         setNeoState('idle');
-      } else if (uiModules.includes('ALERT_PANEL')) {
-         setNeoState('alert');
-      } else {
-         setNeoState('idle'); // or 'speaking' once voice starts
-      }
+    // Load voices
+    useEffect(() => {
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+            window.speechSynthesis.getVoices();
+            window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+        }
+    }, []);
 
-      // 4. Stream Response from API
-      const res = await fetch('/api/neo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: submitText, currentContext: newMemory.history.map(m => m.machine).join(', ') })
-      });
+    // ─── Core Streaming + TTS Handler ─────────────────────────────
+    const streamAndSpeak = useCallback(async (
+        promptText: string,
+        contextOverride?: string,
+        addUserMsg = true
+    ) => {
+        if (isProcessing) return;
+        setIsProcessing(true);
 
-      if (!res.body || !res.ok) throw new Error("Failed connecting to Neo API");
-      
-      setNeoState('speaking');
-      
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let assistantContent = '';
-      
-      // Start an empty message
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        // Cancel ongoing speech
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+        setNeoState('processing');
 
-      let sentenceBuffer = '';
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value);
-        assistantContent += chunk;
-        sentenceBuffer += chunk;
-        
-        // Update UI
-        setMessages(prev => {
-          const newArr = [...prev];
-          newArr[newArr.length - 1].content = assistantContent;
-          return newArr;
-        });
+        if (addUserMsg) {
+            setMessages(prev => [...prev, { role: 'user', content: promptText }]);
+        }
 
-        // Speech Synthesis by sentences
-        if (sentenceBuffer.includes('.') || sentenceBuffer.includes('!') || sentenceBuffer.includes('?')) {
-            const ends = sentenceBuffer.match(/.*?[.!?](\s|$)/);
-            if (ends && ends[0] && 'speechSynthesis' in window) {
-               const utterance = new SpeechSynthesisUtterance(ends[0].trim());
-               window.speechSynthesis.speak(utterance);
-               sentenceBuffer = sentenceBuffer.replace(ends[0], '');
+        try {
+            const { parseIntent, updateContext, resolveData, mapIntentToUI } = await import('@/lib/neo-engine');
+            const intentOutput = await parseIntent(promptText, contextMemory);
+            const newMemory = updateContext(intentOutput, contextMemory);
+            setContextMemory(newMemory);
+
+            const resolvedData = resolveData(intentOutput, machines);
+            setActiveContextData(resolvedData);
+            const uiModules = mapIntentToUI(intentOutput, resolvedData);
+            setActiveUIModules(uiModules);
+
+            // Set Analysis state for HUD
+            setAnalysis({
+                intent: intentOutput.intents.map(i => i.intent).join(", "),
+                actionPlan: [
+                    "Parsed intent successfully",
+                    `Resolved ${resolvedData ? "machine telemetry" : "fleet data"}`,
+                    `Mapped to ${uiModules.length} UI panels`
+                ]
+            });
+
+            // Focus Mode
+            const lastMachine = intentOutput.intents.find(i => i.machine)?.machine || null;
+            setFocusedMachine(lastMachine);
+
+            // Highlight Visual Sync
+            if (promptText.toLowerCase().includes("temperature")) setHighlightedKeyword("temperature");
+            else if (promptText.toLowerCase().includes("vibration")) setHighlightedKeyword("vibration");
+            else setHighlightedKeyword(null);
+
+            // Build context for LLM
+            const machinesSummary = machines.map(m =>
+                `${m.name}: status=${m.status}, health=${m.healthIndex}%, RUL=${m.rul}d`
+            ).join('; ');
+
+            const contextStr = contextOverride ||
+                `Machines: [${machinesSummary}]. Active alerts: ${alerts.filter(a => !a.acknowledged).length}.` +
+                (selectedMachine ? ` Viewing: ${selectedMachine.name}.` : '');
+
+            setNeoState('speaking');
+            let assistantContent = '';
+            setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+            let sentenceBuffer = '';
+
+            await streamNeoRequest({
+                query: promptText,
+                machineData: machines,
+                conversationHistory: messages
+            }, (token: string) => {
+                assistantContent += token;
+                sentenceBuffer += token;
+
+                setMessages(prev => {
+                    const newArr = [...prev];
+                    newArr[newArr.length - 1] = { ...newArr[newArr.length - 1], content: assistantContent };
+                    return newArr;
+                });
+
+                setCurrentResponseToken(token);
+
+                // Sentence-by-sentence TTS
+                const sentenceMatch = sentenceBuffer.match(/^(.*?[.!?])(\s|$)/);
+                if (sentenceMatch) {
+                    speakSentence(sentenceMatch[1]);
+                    sentenceBuffer = sentenceBuffer.slice(sentenceMatch[0].length);
+                }
+            });
+
+            if (sentenceBuffer.trim()) speakSentence(sentenceBuffer);
+
+            if (uiModules.includes('ALERT_PANEL')) {
+                setNeoState('alert');
+            } else {
+                setNeoState('idle');
+            }
+        } catch (err) {
+            console.error(err);
+            setMessages(prev => [...prev, { role: 'assistant', content: 'Processing error. Check if Ollama is running.' }]);
+            setNeoState('idle');
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [isProcessing, contextMemory, machines, alerts, selectedMachine, setNeoState, setContextMemory, setActiveContextData, setActiveUIModules, setAnalysis, setFocusedMachine, setHighlightedKeyword, setTelemetry, setCurrentResponseToken]);
+
+    const handleSubmit = async (e: React.FormEvent | null, textOverride?: string) => {
+        if (e) e.preventDefault();
+        const submitText = textOverride || input;
+        if (!submitText.trim()) return;
+        setInput('');
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+        await streamAndSpeak(submitText);
+    };
+
+    // ─── SpeechRecognition (STT) ──────────────────────────────────
+    const startSTT = useCallback(() => {
+        if (typeof window === 'undefined') return;
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SpeechRecognition) return;
+
+        if (recognitionRef.current) {
+            try { recognitionRef.current.abort(); } catch {}
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+        recognition.onstart = () => {
+            setIsListeningSTT(true);
+            setNeoState('listening');
+        };
+        recognition.onresult = (event: any) => {
+            const transcript = event.results[0]?.[0]?.transcript;
+            if (transcript) {
+                setIsListeningSTT(false);
+                streamAndSpeak(transcript);
+            }
+        };
+        recognition.onerror = () => {
+            setIsListeningSTT(false);
+            setNeoState('idle');
+        };
+        recognition.onend = () => {
+            setIsListeningSTT(false);
+            if (neoState === 'listening') setNeoState('idle');
+        };
+        recognitionRef.current = recognition;
+        recognition.start();
+    }, [setNeoState, neoState, streamAndSpeak]);
+
+    // ─── Porcupine Wake Word ──────────────────────────────────────
+    useEffect(() => {
+        if (!wakeWordEnabled || !PICOVOICE_ACCESS_KEY) {
+            if (porcupineRef.current) {
+                import('@picovoice/web-voice-processor').then(({ WebVoiceProcessor }) => {
+                    WebVoiceProcessor.unsubscribe(porcupineRef.current).catch(() => {});
+                });
+                porcupineRef.current.release?.().catch(() => {});
+                porcupineRef.current = null;
+            }
+            return;
+        }
+
+        let cancelled = false;
+        async function init() {
+            try {
+                const { PorcupineWorker } = await import('@picovoice/porcupine-web');
+                const { WebVoiceProcessor } = await import('@picovoice/web-voice-processor');
+                if (cancelled) return;
+
+                const porcupine = await PorcupineWorker.create(
+                    PICOVOICE_ACCESS_KEY,
+                    [{ publicPath: '/hey_neo.ppn', label: 'Hey Neo', sensitivity: 0.75 }],
+                    () => {
+                        addLog("Wake word DETECTED: Hey Neo");
+                        setChatOpen(true);
+                        setHUDVisible(true);
+                        setNeoState('listening');
+                        speakSentence('Yes?');
+                        setTimeout(() => startSTT(), 400);
+                    },
+                    { publicPath: '/porcupine_params.pv' }
+                );
+
+                if (cancelled) { porcupine.release(); return; }
+                porcupineRef.current = porcupine;
+                await WebVoiceProcessor.subscribe(porcupine);
+                addLog("Wake word detection active.");
+            } catch (err) {
+                console.error('Porcupine error:', err);
             }
         }
-      }
+        init();
+        return () => {
+            cancelled = true;
+            if (porcupineRef.current) {
+                import('@picovoice/web-voice-processor').then(({ WebVoiceProcessor }) => {
+                    WebVoiceProcessor.unsubscribe(porcupineRef.current).catch(() => {});
+                });
+                porcupineRef.current.release?.().catch(() => {});
+            }
+        };
+    }, [wakeWordEnabled, setChatOpen, setHUDVisible, setNeoState, startSTT, addLog]);
 
-      // Speak remaining buffer
-      if (sentenceBuffer.trim() && 'speechSynthesis' in window) {
-         window.speechSynthesis.speak(new SpeechSynthesisUtterance(sentenceBuffer.trim()));
-      }
-      
-      // Cleanup visual state if not permanently alert
-      if (uiModules.includes('ALERT_PANEL')) {
-          setNeoState('alert');
-      } else {
-          setNeoState('idle');
-      }
+    // ─── Simulate Alert ───────────────────────────────────────────
+    const handleSimulateAlert = useCallback(async () => {
+        if (isProcessing) return;
+        const randomMachine = machines[Math.floor(Math.random() * machines.length)];
+        setNeoState('alert');
 
-    } catch(err) {
-       console.error(err);
-       setMessages(prev => [...prev, { role: 'assistant', content: "I encountered a processing error. Please check system logs." }]);
-       setNeoState('idle');
-    } finally {
-       setIsProcessing(false);
-    }
-  }
+        const alertPrompt = `URGENT ALERT: ${randomMachine.name} (ID: ${randomMachine.id}) has just gone CRITICAL. Health index dropped significantly. Recommend immediate action.`;
+        setMessages(prev => [...prev, {
+            role: 'user',
+            content: `🚨 [ALERT SIMULATION] ${randomMachine.name} went critical!`
+        }]);
 
-  const suggestedQueries = [
-    "Show urgent issues",
-    "Why is Press-02 at risk?",
-    "Summarize report"
-  ]
+        await streamAndSpeak(alertPrompt, `Emergency alert simulation. Machine ${randomMachine.name} is in critical failure.`, false);
+    }, [isProcessing, machines, streamAndSpeak, setNeoState]);
 
-  return (
-    <div className="flex flex-col h-full bg-[#0A101D] text-slate-200 overflow-hidden font-sans">
-      {/* Header */}
-      <div className="flex items-center justify-between p-5 border-b border-white/5 bg-[#0F172A]/80">
-        <div className="flex items-center gap-4">
-          <div className="relative">
-            <div className="w-12 h-12 rounded-full bg-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.4)] flex items-center justify-center relative z-10">
-              <Bot className="w-6 h-6 text-white" />
-            </div>
-            {/* Status dot */}
-            <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-red-500 border-2 border-[#0F172A] z-20"></div>
-          </div>
-          <div>
-            <h3 className="font-bold text-xl text-white tracking-tight">Neo</h3>
-            <p className="text-xs text-cyan-400 font-medium flex items-center gap-1">
-              <Sparkles className="w-3 h-3" /> Factory AI Assistant
-            </p>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-[#1E293B]/80 px-3 py-1.5 rounded-full border border-white/5">
-            <span className="text-xs font-bold text-slate-300 tracking-wider">HEY NEO</span>
-            <Switch 
-              checked={heyNeoEnabled} 
-              onCheckedChange={setHeyNeoEnabled}
-              className="data-[state=checked]:bg-cyan-500 scale-75 origin-right"
-            />
-          </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-white transition-colors rounded-full hover:bg-white/5">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
+    // ─── Daily Report ─────────────────────────────────────────────
+    const handleDailyReport = useCallback(async () => {
+        if (isProcessing) return;
+        setNeoState('processing');
 
-      {/* Tabs */}
-      <div className="px-5 py-3 border-b border-white/5">
-        <div className="flex bg-transparent rounded-lg">
-          <button 
-            onClick={() => setActiveTab('qa')}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all",
-              activeTab === 'qa' ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20 shadow-[0_4px_12px_rgba(6,182,212,0.1)]" : "text-slate-400 hover:text-slate-200"
-            )}
-          >
-            <Bot className="w-4 h-4" /> Q&A
-          </button>
-          <button 
-            onClick={() => setActiveTab('alerts')}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all relative",
-              activeTab === 'alerts' ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20" : "text-slate-400 hover:text-slate-200"
-            )}
-          >
-            <AlertTriangle className="w-4 h-4" /> Alerts
-            {alerts.filter(a => !a.acknowledged).length > 0 && (
-               <div className="w-2 h-2 rounded-full bg-red-500 absolute top-2 right-4"></div>
-            )}
-          </button>
-          <button 
-            onClick={() => setActiveTab('reports')}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all",
-              activeTab === 'reports' ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20" : "text-slate-400 hover:text-slate-200"
-            )}
-          >
-            <FileText className="w-4 h-4" /> Reports
-          </button>
-        </div>
-      </div>
+        const reportPrompt = `Give me a daily factory status report. Current fleet size is ${machines.length}. Provide a brief spoken summary.`;
+        setMessages(prev => [...prev, {
+            role: 'user',
+            content: `📊 [DAILY REPORT] Requested fleet status summary`
+        }]);
 
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-6 bg-gradient-to-b from-[#0A101D] to-[#05080f] relative">
-        <div className="absolute left-2 top-20 bottom-20 w-[2px] opacity-20 bg-gradient-to-b from-transparent via-red-500 to-transparent flex flex-col justify-between py-10 items-center">
-            <div className="h-2 w-[2px] bg-red-500"></div>
-            <div className="h-4 w-[2px] bg-red-500"></div>
-            <div className="h-6 w-[2px] bg-red-500"></div>
-            <div className="h-3 w-[2px] bg-red-500"></div>
-            <div className="h-5 w-[2px] bg-red-500"></div>
-            <div className="h-2 w-[2px] bg-red-500"></div>
-        </div>
+        await streamAndSpeak(reportPrompt, undefined, false);
+    }, [isProcessing, machines, streamAndSpeak, setNeoState]);
 
-        {activeTab === 'qa' && (
-          <div className="space-y-6">
-            <div className="flex gap-4">
-              <div className="max-w-[85%] bg-[#1E293B] border border-white/5 rounded-2xl rounded-tl-sm p-4 shadow-lg z-10 ml-4">
-                <div className="flex items-center gap-2 mb-2 text-cyan-400">
-                  <Bot className="w-4 h-4" />
-                </div>
-                <p className="text-[15px] leading-relaxed text-slate-200">
-                  Hello! I'm Neo, your AI factory assistant. I'm monitoring equipment health in real-time.
-                </p>
-              </div>
-            </div>
+    const suggestedQueries = [
+        "Show urgent issues",
+        "What machines need attention?",
+        "Give me a prediction overview"
+    ];
 
-            {messages.map((m, idx) => (
-               <div key={idx} className={`flex gap-4 ${m.role === 'user' ? 'justify-end' : ''}`}>
-                  {m.role === 'assistant' && (
-                    <div className="max-w-[85%] bg-[#1E293B] border border-white/5 rounded-2xl rounded-tl-sm p-4 shadow-lg z-10 ml-4">
-                        <div className="flex items-center gap-2 mb-2 text-cyan-400">
-                          <Bot className="w-4 h-4" />
+    return (
+        <>
+            {/* Floating Button */}
+            <AnimatePresence>
+                {!isChatOpen && (
+                    <motion.button
+                        initial={{ scale: 0, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        exit={{ scale: 0, opacity: 0 }}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => {
+                            setChatOpen(true);
+                            setHUDVisible(true);
+                        }}
+                        className="fixed bottom-6 right-6 w-16 h-16 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg z-[120] transition-shadow duration-500"
+                        style={{
+                            boxShadow: neoState === "alert"
+                                ? "0 0 30px rgba(239, 68, 68, 0.8), 0 0 60px rgba(239, 68, 68, 0.4)"
+                                : neoState === "listening"
+                                ? "0 0 25px rgba(56, 189, 248, 0.8)"
+                                : neoState === "speaking"
+                                ? "0 0 20px rgba(139, 92, 246, 0.6)"
+                                : "0 0 20px rgba(6, 182, 212, 0.5)"
+                        }}
+                    >
+                        <AnimatePresence mode="wait">
+                            {neoState === "speaking" ? (
+                                <motion.div key="speaking" className="flex items-center justify-center gap-1">
+                                    {[1, 2, 3].map((i) => (
+                                        <motion.div
+                                            key={i}
+                                            className="w-1.5 bg-white rounded-full bg-blue-100"
+                                            animate={{ height: ["8px", "20px", "8px"] }}
+                                            transition={{ duration: 0.6, repeat: Infinity, delay: i * 0.15 }}
+                                        />
+                                    ))}
+                                </motion.div>
+                            ) : neoState === "listening" ? (
+                                <motion.div
+                                    key="listening"
+                                    className="absolute inset-0 rounded-full border-2 border-white/50 animate-pulse"
+                                />
+                            ) : (
+                                <Bot className="w-8 h-8 text-white" />
+                            )}
+                        </AnimatePresence>
+                    </motion.button>
+                )}
+            </AnimatePresence>
+
+            {/* Panel */}
+            <AnimatePresence>
+                {isChatOpen && (
+                    <motion.div
+                        initial={{ opacity: 0, x: 400 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 400 }}
+                        className="fixed right-0 top-0 h-screen w-full lg:w-[400px] border-l border-cyan-500/20 flex flex-col z-[130] bg-[#030712]/95 backdrop-blur-xl shadow-2xl"
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between p-5 border-b border-cyan-500/20 bg-[#0F172A]/40">
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => setChatOpen(false)}
+                                    className="p-2 text-slate-400 hover:text-cyan-400 transition-colors rounded-full hover:bg-white/5 lg:hidden"
+                                >
+                                    <ChevronLeft className="w-5 h-5" />
+                                </button>
+                                <div className="relative">
+                                    <div className="w-10 h-10 rounded-full bg-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.4)] flex items-center justify-center">
+                                        <Bot className="w-6 h-6 text-white" />
+                                    </div>
+                                    <div className={cn(
+                                        "absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#030712]",
+                                        neoState === 'alert' ? "bg-red-500 animate-pulse" : "bg-green-500"
+                                    )} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-lg text-white tracking-tight leading-none">Neo</h3>
+                                    <p className="text-[11px] text-cyan-400 font-medium flex items-center gap-1 mt-1 uppercase tracking-wider">
+                                        <Sparkles className="w-3 h-3" />
+                                        {isListeningSTT ? 'Listening...' : neoState === 'speaking' ? 'Speaking...' : 'Ollama Assistant'}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-slate-700/50">
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Hey Neo</span>
+                                    <button
+                                        onClick={() => {
+                                            if (!wakeWordEnabled && !PICOVOICE_ACCESS_KEY) {
+                                                alert('Set NEXT_PUBLIC_PORCUPINE_ACCESS_KEY in .env.local to enable wake word.');
+                                                return;
+                                            }
+                                            setWakeWordEnabled(!wakeWordEnabled);
+                                        }}
+                                        className={cn(
+                                            "w-7 h-4 rounded-full relative transition-colors duration-300 focus:outline-none",
+                                            wakeWordEnabled ? "bg-cyan-500" : "bg-slate-700"
+                                        )}
+                                    >
+                                        <motion.div
+                                            className="w-3 h-3 bg-white rounded-full absolute top-0.5"
+                                            animate={{ x: wakeWordEnabled ? 14 : 2 }}
+                                            transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                                        />
+                                    </button>
+                                </div>
+                                <button 
+                                    onClick={() => {
+                                        setChatOpen(false);
+                                        if (onClose) onClose();
+                                    }} 
+                                    className="p-2 text-slate-400 hover:text-red-400 transition-colors rounded-full hover:bg-white/5"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
                         </div>
-                        <p className="text-[15px] leading-relaxed text-slate-200">
-                          {m.content}
-                        </p>
-                    </div>
-                  )}
-                  {m.role === 'user' && (
-                     <div className="max-w-[85%] bg-cyan-600 border border-cyan-500/50 rounded-2xl rounded-tr-sm p-4 shadow-lg z-10 mr-4">
-                        <div className="flex items-center justify-end gap-2 mb-2 text-cyan-100">
-                          <MessageSquare className="w-4 h-4" />
+
+                        {/* Tabs */}
+                        <div className="flex border-b border-slate-800/80 p-2 gap-2 bg-[#0F172A]/20">
+                            {[
+                                { id: 'qa', label: 'Q&A', icon: Bot },
+                                { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
+                                { id: 'reports', label: 'Reports', icon: FileText }
+                            ].map(tab => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setActiveTab(tab.id as any)}
+                                    className={cn(
+                                        "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all",
+                                        activeTab === tab.id ? "bg-cyan-950/40 text-cyan-400 border border-cyan-500/20" : "text-slate-400 hover:text-slate-200"
+                                    )}
+                                >
+                                    <tab.icon className="w-4 h-4" /> {tab.label}
+                                </button>
+                            ))}
                         </div>
-                        <p className="text-[15px] leading-relaxed text-white">
-                          {m.content}
-                        </p>
-                     </div>
-                  )}
-               </div>
-            ))}
-            
-            {isProcessing && (
-              <div className="flex gap-4">
-                <div className="bg-[#1E293B] border border-white/5 rounded-2xl rounded-tl-sm px-5 py-4 shadow-lg z-10 ml-4">
-                    <div className="flex gap-1.5 items-center justify-center">
-                       <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                       <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                       <div className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-        
-        <div ref={messagesEndRef} />
-      </div>
 
-      {/* Input Area */}
-      <div className="p-5 border-t border-white/5 bg-[#0F172A]/80">
-        <form onSubmit={handleSubmit} className="relative flex items-center gap-3">
-          <div className="relative flex-1">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask Neo about equipment..."
-              className="w-full bg-[#1E293B] border border-white/10 rounded-xl px-5 py-4 text-[15px] text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all pr-12"
-            />
-            <button 
-              type="button"
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-400 transition-colors"
-            >
-              <Mic className="w-5 h-5" />
-            </button>
-          </div>
-          
-          <button
-            type="submit"
-            disabled={!input.trim()}
-            className="h-[54px] w-[54px] bg-cyan-600 hover:bg-cyan-500 focus:bg-cyan-500 rounded-xl flex items-center justify-center text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 shadow-[0_0_15px_rgba(6,182,212,0.3)] disabled:shadow-none"
-          >
-            <Send className="w-5 h-5 ml-1" />
-          </button>
-        </form>
+                        {/* Messages Area */}
+                        <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-gradient-to-b from-[#030712] to-[#010204]">
+                            {activeTab === 'alerts' && (
+                                <div className="space-y-4">
+                                    <button
+                                        onClick={handleSimulateAlert}
+                                        disabled={isProcessing}
+                                        className="w-full flex items-center gap-3 p-4 bg-red-950/40 border border-red-500/30 rounded-xl hover:bg-red-950/60 transition-all disabled:opacity-50 group"
+                                    >
+                                        <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+                                            <Zap className="w-5 h-5 text-red-400" />
+                                        </div>
+                                        <div className="text-left">
+                                            <div className="font-semibold text-red-400 text-sm">Simulate Alert</div>
+                                            <div className="text-xs text-red-300/50">Trigger a random critical anomaly</div>
+                                        </div>
+                                    </button>
+                                    {alerts.filter(a => !a.acknowledged).map((alert) => (
+                                        <div key={alert.id} className="p-4 bg-red-900/10 border border-red-500/20 rounded-xl">
+                                            <div className="text-xs text-red-400 font-bold mb-1 uppercase tracking-tighter">🚨 {alert.severity}</div>
+                                            <div className="text-sm text-slate-300">{alert.message}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
 
-        {/* Suggested Queries */}
-        <div className="mt-5">
-          <p className="text-[11px] font-bold text-slate-500 tracking-widest text-center uppercase mb-3">
-            Suggested Queries
-          </p>
-          <div className="flex flex-wrap gap-2 justify-center">
-            {suggestedQueries.map((query, i) => (
-              <button
-                key={i}
-                onClick={(e) => {
-                  e.preventDefault();
-                  handleSubmit(null, query);
-                }}
-                className="px-4 py-2 rounded-full border border-white/10 bg-[#1E293B]/50 text-[13px] text-slate-300 hover:bg-[#1E293B] hover:text-white hover:border-white/20 transition-all"
-              >
-                {query}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
+                            {activeTab === 'reports' && (
+                                <div className="space-y-4">
+                                    <button
+                                        onClick={handleDailyReport}
+                                        disabled={isProcessing}
+                                        className="w-full flex items-center gap-3 p-4 bg-cyan-950/40 border border-cyan-500/30 rounded-xl hover:bg-cyan-950/60 transition-all disabled:opacity-50 group"
+                                    >
+                                        <div className="w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center">
+                                            <Volume2 className="w-5 h-5 text-cyan-400" />
+                                        </div>
+                                        <div className="text-left">
+                                            <div className="font-semibold text-cyan-400 text-sm">Daily Report</div>
+                                            <div className="text-xs text-cyan-300/50">Synthesize current fleet health</div>
+                                        </div>
+                                    </button>
+                                    <div className="grid grid-cols-2 gap-3 mt-4">
+                                        <div className="bg-slate-800/40 p-4 rounded-xl border border-white/5">
+                                            <div className="text-xs text-slate-500 uppercase font-bold mb-1">Total Fleet</div>
+                                            <div className="text-2xl font-bold text-white">{machines.length}</div>
+                                        </div>
+                                        <div className="bg-green-500/10 p-4 rounded-xl border border-green-500/20">
+                                            <div className="text-xs text-green-500 uppercase font-bold mb-1">Optimal</div>
+                                            <div className="text-2xl font-bold text-green-400">{machines.filter(m => m.status === 'optimal').length}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'qa' && (
+                                <div className="space-y-5">
+                                    {messages.map((m, idx) => (
+                                        <motion.div
+                                            key={idx}
+                                            initial={{ opacity: 0, y: 10 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : ''}`}
+                                        >
+                                            <div className={cn(
+                                                "max-w-[85%] rounded-2xl p-4 shadow-lg",
+                                                m.role === 'user' 
+                                                    ? "bg-cyan-600/30 text-cyan-50 border border-cyan-500/30 rounded-tr-sm" 
+                                                    : "bg-slate-800/80 text-slate-200 border border-white/5 rounded-tl-sm"
+                                            )}>
+                                                {m.role === 'assistant' && (
+                                                    <div className="flex items-center gap-2 mb-2 text-cyan-400 opacity-60">
+                                                        <Bot className="w-4 h-4" />
+                                                        <span className="text-[10px] font-bold uppercase tracking-widest">Neo</span>
+                                                    </div>
+                                                )}
+                                                <p className="text-[14px] leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                                            </div>
+                                        </motion.div>
+                                    ))}
+                                    {isProcessing && (
+                                        <div className="flex gap-2 p-4 bg-slate-800/40 rounded-2xl w-24 justify-center">
+                                            {[0, 150, 300].map(delay => (
+                                                <div key={delay} className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: `${delay}ms` }} />
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        {/* Input Area */}
+                        {activeTab === 'qa' && (
+                            <div className="p-5 border-t border-cyan-500/20 bg-[#0F172A]/80 backdrop-blur-md">
+                                <form onSubmit={handleSubmit} className="flex gap-3 items-center">
+                                    <div className="relative flex-1">
+                                        <input
+                                            type="text"
+                                            value={input}
+                                            onChange={(e) => setInput(e.target.value)}
+                                            placeholder={isListeningSTT ? 'Listening...' : 'Ask Neo...'}
+                                            className="w-full bg-[#1E293B]/80 border border-white/10 rounded-xl pl-5 pr-12 py-3.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-cyan-500/50 transition-all shadow-inner"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={startSTT}
+                                            disabled={isListeningSTT || isProcessing}
+                                            className={cn(
+                                                "absolute right-4 top-1/2 -translate-y-1/2 transition-colors",
+                                                isListeningSTT ? "text-cyan-400 animate-pulse" : "text-slate-400 hover:text-cyan-400"
+                                            )}
+                                        >
+                                            <Mic className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        disabled={!input.trim() || isProcessing}
+                                        className="h-[48px] w-[48px] bg-gradient-to-br from-cyan-600 to-blue-700 hover:from-cyan-500 hover:to-blue-600 rounded-xl flex items-center justify-center text-white transition-all disabled:opacity-50 shadow-lg shadow-cyan-900/20"
+                                    >
+                                        <Send className="w-5 h-5 ml-0.5" />
+                                    </button>
+                                </form>
+                                <div className="mt-4 flex flex-wrap gap-2 justify-center opacity-60">
+                                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest w-full text-center mb-1">Suggestions</span>
+                                    {suggestedQueries.map((q, i) => (
+                                        <button
+                                            key={i}
+                                            onClick={() => handleSubmit(null, q)}
+                                            className="px-2.5 py-1.5 bg-slate-800/50 border border-white/5 rounded-lg text-[11px] text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-all"
+                                        >
+                                            {q}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </>
+    );
 }

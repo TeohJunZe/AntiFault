@@ -1,9 +1,6 @@
 'use client'
 
-import { SensorReading } from '@/lib/data'
 import {
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   Tooltip,
@@ -12,20 +9,33 @@ import {
   AreaChart,
 } from 'recharts'
 
+import mockRul10 from '../backend/mock_data/mock_payload_rul_10.json'
+import mockRul40 from '../backend/mock_data/mock_payload_rul_40.json'
+import mockRul100 from '../backend/mock_data/mock_payload_rul_100.json'
+
 interface SensorChartsProps {
-  data: SensorReading[]
+  machineId: string
 }
 
-export function SensorCharts({ data }: SensorChartsProps) {
-  const formattedData = data.map((reading) => ({
-    time: new Date(reading.timestamp).toLocaleTimeString('en-US', {
+export function SensorCharts({ machineId }: SensorChartsProps) {
+  let payload: any;
+  if (machineId === 'machine-1' || machineId === 'machine-4') payload = mockRul40;
+  else if (machineId === 'machine-2' || machineId === 'machine-5') payload = mockRul100;
+  else payload = mockRul10;
+
+  const flightHistory = payload.flight_history || [];
+  const recentFlights = flightHistory.slice(-24);
+  const now = Date.now();
+
+  const formattedData = recentFlights.map((flight: any, idx: number) => ({
+    time: new Date(now - (recentFlights.length - 1 - idx) * 3600000).toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
     }),
-    temperature: Math.round(reading.temperature * 10) / 10,
-    vibration: Math.round(reading.vibration * 100) / 100,
-    load: Math.round(reading.load),
-    pressure: Math.round(reading.pressure),
+    s1: Math.round(flight.sensor_1 * 100) / 100,
+    s5: Math.round(flight.sensor_5 * 100) / 100,
+    s2: Math.round(flight.sensor_2 * 100) / 100,
+    s11: Math.round(flight.sensor_11 * 100) / 100,
   }))
 
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -36,10 +46,6 @@ export function SensorCharts({ data }: SensorChartsProps) {
           {payload.map((entry: any, index: number) => (
             <p key={index} style={{ color: entry.color }}>
               {entry.name}: {entry.value}
-              {entry.name === 'Temperature' ? '°C' :
-               entry.name === 'Vibration' ? ' mm/s' :
-               entry.name === 'Load' ? '%' :
-               entry.name === 'Pressure' ? ' PSI' : ''}
             </p>
           ))}
         </div>
@@ -50,19 +56,19 @@ export function SensorCharts({ data }: SensorChartsProps) {
 
   return (
     <div className="grid grid-cols-2 gap-4">
-      {/* Temperature */}
+      {/* Sensor 1: Stagnant */}
       <div className="bg-muted/30 rounded-lg p-3">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-muted-foreground">Temperature</span>
+          <span className="text-xs font-medium text-muted-foreground" title="Temperature 1">Temperature 1</span>
           <span className="text-sm font-mono text-chart-1">
-            {formattedData[formattedData.length - 1]?.temperature}°C
+            {formattedData[formattedData.length - 1]?.s1} °C
           </span>
         </div>
         <div className="h-[80px]">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={formattedData}>
               <defs>
-                <linearGradient id="tempGradient" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="gradient1" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="oklch(0.75 0.15 195)" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="oklch(0.75 0.15 195)" stopOpacity={0} />
                 </linearGradient>
@@ -72,10 +78,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
               <Tooltip content={<CustomTooltip />} />
               <Area
                 type="monotone"
-                dataKey="temperature"
-                name="Temperature"
+                dataKey="s1"
+                name="Temperature 1"
                 stroke="oklch(0.75 0.15 195)"
-                fill="url(#tempGradient)"
+                fill="url(#gradient1)"
                 strokeWidth={2}
               />
             </AreaChart>
@@ -83,19 +89,19 @@ export function SensorCharts({ data }: SensorChartsProps) {
         </div>
       </div>
 
-      {/* Vibration */}
+      {/* Sensor 5: Stagnant */}
       <div className="bg-muted/30 rounded-lg p-3">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-muted-foreground">Vibration</span>
+          <span className="text-xs font-medium text-muted-foreground" title="Vibration 1">Vibration 1</span>
           <span className="text-sm font-mono text-chart-2">
-            {formattedData[formattedData.length - 1]?.vibration} mm/s
+            {formattedData[formattedData.length - 1]?.s5} mm/s
           </span>
         </div>
         <div className="h-[80px]">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={formattedData}>
               <defs>
-                <linearGradient id="vibGradient" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="gradient5" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="oklch(0.65 0.2 145)" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="oklch(0.65 0.2 145)" stopOpacity={0} />
                 </linearGradient>
@@ -105,10 +111,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
               <Tooltip content={<CustomTooltip />} />
               <Area
                 type="monotone"
-                dataKey="vibration"
-                name="Vibration"
+                dataKey="s5"
+                name="Vibration 1"
                 stroke="oklch(0.65 0.2 145)"
-                fill="url(#vibGradient)"
+                fill="url(#gradient5)"
                 strokeWidth={2}
               />
             </AreaChart>
@@ -116,19 +122,19 @@ export function SensorCharts({ data }: SensorChartsProps) {
         </div>
       </div>
 
-      {/* Load */}
+      {/* Sensor 2: Changing */}
       <div className="bg-muted/30 rounded-lg p-3">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-muted-foreground">Load</span>
+          <span className="text-xs font-medium text-muted-foreground" title="Temperature 2">Temperature 2</span>
           <span className="text-sm font-mono text-chart-3">
-            {formattedData[formattedData.length - 1]?.load}%
+            {formattedData[formattedData.length - 1]?.s2} °C
           </span>
         </div>
         <div className="h-[80px]">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={formattedData}>
               <defs>
-                <linearGradient id="loadGradient" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="gradient2" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="oklch(0.75 0.18 75)" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="oklch(0.75 0.18 75)" stopOpacity={0} />
                 </linearGradient>
@@ -138,10 +144,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
               <Tooltip content={<CustomTooltip />} />
               <Area
                 type="monotone"
-                dataKey="load"
-                name="Load"
+                dataKey="s2"
+                name="Temperature 2"
                 stroke="oklch(0.75 0.18 75)"
-                fill="url(#loadGradient)"
+                fill="url(#gradient2)"
                 strokeWidth={2}
               />
             </AreaChart>
@@ -149,19 +155,19 @@ export function SensorCharts({ data }: SensorChartsProps) {
         </div>
       </div>
 
-      {/* Pressure */}
+      {/* Sensor 11: Changing */}
       <div className="bg-muted/30 rounded-lg p-3">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-muted-foreground">Pressure</span>
+          <span className="text-xs font-medium text-muted-foreground" title="Vibration 2">Vibration 2</span>
           <span className="text-sm font-mono text-chart-5">
-            {formattedData[formattedData.length - 1]?.pressure} PSI
+            {formattedData[formattedData.length - 1]?.s11} mm/s
           </span>
         </div>
         <div className="h-[80px]">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={formattedData}>
               <defs>
-                <linearGradient id="pressGradient" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="gradient11" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="oklch(0.65 0.18 250)" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="oklch(0.65 0.18 250)" stopOpacity={0} />
                 </linearGradient>
@@ -171,10 +177,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
               <Tooltip content={<CustomTooltip />} />
               <Area
                 type="monotone"
-                dataKey="pressure"
-                name="Pressure"
+                dataKey="s11"
+                name="Vibration 2"
                 stroke="oklch(0.65 0.18 250)"
-                fill="url(#pressGradient)"
+                fill="url(#gradient11)"
                 strokeWidth={2}
               />
             </AreaChart>

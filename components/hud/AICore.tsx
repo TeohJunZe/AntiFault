@@ -1,110 +1,99 @@
-'use client'
+"use client";
 
-import React from 'react';
-import { useNeoHUD } from './NeoHUDContext';
-import { cn } from '@/lib/utils';
-import { motion } from 'framer-motion';
+import React, { useEffect, useState } from "react";
+import { useNeoHUD } from "./NeoHUDContext";
+import { cn } from "@/lib/utils";
 
-export function AICore() {
-  const { neoState } = useNeoHUD();
-  
-  // State-based visual configurations
-  const config = {
-    idle: {
-      color: 'border-cyan-800 shadow-cyan-900/40',
-      spinOuter: 'animate-[spin_20s_linear_infinite]',
-      spinInner: 'animate-[spin_15s_linear_infinite_reverse]',
-      glow: 'shadow-[0_0_20px_theme(colors.cyan.800)]',
-      pulse: ''
-    },
-    listening: {
-      color: 'border-cyan-400 shadow-cyan-400/80',
-      spinOuter: 'animate-[spin_10s_linear_infinite]',
-      spinInner: 'animate-[spin_8s_linear_infinite_reverse]',
-      glow: 'shadow-[0_0_50px_theme(colors.cyan.400)] text-cyan-500',
-      pulse: 'animate-pulse'
-    },
-    processing: {
-      color: 'border-fuchsia-500 shadow-fuchsia-500/80',
-      spinOuter: 'animate-[spin_4s_linear_infinite]',
-      spinInner: 'animate-[spin_3s_linear_infinite_reverse]',
-      glow: 'shadow-[0_0_60px_theme(colors.fuchsia.500)] text-fuchsia-500',
-      pulse: 'animate-pulse'
-    },
-    speaking: {
-      color: 'border-blue-500 shadow-blue-500/80',
-      spinOuter: 'animate-[spin_12s_linear_infinite]',
-      spinInner: 'animate-[spin_10s_linear_infinite_reverse]',
-      glow: 'shadow-[0_0_40px_theme(colors.blue.500)] text-blue-500',
-      pulse: ''
-    },
-    alert: {
-      color: 'border-red-600 shadow-red-600/80',
-      spinOuter: 'animate-[spin_8s_linear_infinite]',
-      spinInner: 'animate-[spin_6s_linear_infinite_reverse]',
-      glow: 'shadow-[0_0_70px_theme(colors.red.600)] text-red-600',
-      pulse: 'animate-ping'
-    }
-  };
+export default function AICore() {
+  const { neoState, isHUDVisible } = useNeoHUD();
+  const [rotation, setRotation] = useState(0);
 
-  const current = config[neoState] || config.idle;
+  useEffect(() => {
+    if (!isHUDVisible) return;
+    const interval = setInterval(() => {
+      setRotation(prev => (prev + 0.5) % 360);
+    }, 50);
+    return () => clearInterval(interval);
+  }, [isHUDVisible]);
+
+  if (!isHUDVisible) return null;
+
+  // Derive visual states from NeoState
+  const isListening = neoState === "listening";
+  const isProcessing = neoState === "processing";
+  const isSpeaking = neoState === "speaking";
+  const isAlert = neoState === "alert";
+
+  const coreColorClass = isAlert
+    ? "text-red-500 stroke-red-500 drop-shadow-[0_0_15px_#ef4444]"
+    : isListening
+    ? "text-cyan-400 stroke-cyan-400 drop-shadow-[0_0_20px_#22d3ee]"
+    : isProcessing
+    ? "text-fuchsia-400 stroke-fuchsia-400 drop-shadow-[0_0_15px_#e879f9]"
+    : isSpeaking
+    ? "text-blue-400 stroke-blue-400 drop-shadow-[0_0_25px_#60a5fa]"
+    : "text-cyan-600 stroke-cyan-600 drop-shadow-[0_0_5px_#0891b2]"; // Idle
+
+  const pulseAnimation = isSpeaking || isAlert ? "animate-pulse" : "";
+  const spinSpeed = isProcessing ? 3 : isSpeaking ? 1.5 : 0.5;
 
   return (
-    <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10 overflow-hidden">
+    <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
       
-      {/* Central Core */}
-      <div className={cn("relative w-[600px] h-[600px] flex items-center justify-center opacity-60 transition-all duration-1000", current.glow)}>
+      {/* Central Concentric Ring Container (Stark Aesthetic) */}
+      <div 
+        className={cn("relative transition-all duration-1000", coreColorClass)}
+        style={{ width: "800px", height: "800px", transform: `rotate(${rotation * spinSpeed}deg)` }}
+      >
         
-        {/* Navigation Markers & Compass Scale */}
-        <div className="absolute inset-0">
-           {/* N and E Labels */}
-           <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] text-cyan-600 font-mono tracking-widest drop-shadow-[0_0_5px_rgba(34,211,238,0.5)]">
-              N-00.0
-           </div>
-           <div className="absolute top-1/2 -right-12 -translate-y-1/2 text-[10px] text-cyan-600 font-mono tracking-widest drop-shadow-[0_0_5px_rgba(34,211,238,0.5)] rotate-90 origin-left">
-              E-90.0
-           </div>
+        {/* Massive Outer HUD Ring */}
+        <svg className="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 800 800">
+          <circle cx="400" cy="400" r="390" stroke="currentColor" strokeWidth="2" fill="none" strokeDasharray="10 30" />
+          <circle cx="400" cy="400" r="380" stroke="currentColor" strokeWidth="1" fill="none" strokeDasharray="4 8" />
+        </svg>
 
-           {/* Compass Tick Marks Ring */}
-           <svg className="absolute inset-0 w-full h-full animate-[spin_60s_linear_infinite]" viewBox="0 0 600 600">
-               <circle cx="300" cy="300" r="290" fill="none" stroke="currentColor" strokeWidth="0.5" className="text-cyan-800/40" />
-               {Array.from({ length: 72 }).map((_, i) => {
-                   const angle = (i * 5 * Math.PI) / 180;
-                   const isMajor = i % 18 === 0;
-                   const rInner = isMajor ? 280 : 285;
-                   const x1 = 300 + 290 * Math.cos(angle);
-                   const y1 = 300 + 290 * Math.sin(angle);
-                   const x2 = 300 + rInner * Math.cos(angle);
-                   const y2 = 300 + rInner * Math.sin(angle);
-                   return (
-                       <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="currentColor" strokeWidth={isMajor ? 1.5 : 0.5} className="text-cyan-500/60" />
-                   );
-               })}
-           </svg>
+        {/* Segmented Data Ring */}
+        <svg className="absolute inset-0 w-full h-full opacity-50" viewBox="0 0 800 800" style={{ transform: `rotate(${-rotation * spinSpeed * 1.5}deg)` }}>
+          <circle cx="400" cy="400" r="300" stroke="currentColor" strokeWidth="15" fill="none" strokeDasharray="50 100 200 50" />
+          <circle cx="400" cy="400" r="280" stroke="currentColor" strokeWidth="2" fill="none" />
+        </svg>
+
+        {/* Medium Navigational Ring */}
+        <svg className="absolute inset-0 w-full h-full opacity-60" viewBox="0 0 800 800" style={{ transform: `rotate(${rotation * spinSpeed * 2}deg)` }}>
+          <circle cx="400" cy="400" r="200" stroke="currentColor" strokeWidth="5" fill="none" strokeDasharray="1 10" />
+          <path d="M 200 400 A 200 200 0 0 1 600 400" stroke="currentColor" strokeWidth="10" fill="none" />
+        </svg>
+
+        {/* Inner Active Core Ring */}
+        <svg className="absolute inset-0 w-full h-full opacity-80" viewBox="0 0 800 800" style={{ transform: `rotate(${-rotation * spinSpeed * 3}deg)` }}>
+          <circle cx="400" cy="400" r="120" stroke="currentColor" strokeWidth="8" fill="none" strokeDasharray="20 40" />
+          <circle cx="400" cy="400" r="100" stroke="currentColor" strokeWidth="4" fill="none" strokeDasharray="100 20" />
+        </svg>
+
+        {/* The Absolute Center "Eye" */}
+        <div className="absolute inset-0 flex items-center justify-center">
+             <div className={cn("w-32 h-32 rounded-full border-4 border-current bg-current/20 backdrop-blur-md flex items-center justify-center", pulseAnimation)}>
+                <div className="w-16 h-16 rounded-full bg-current shadow-[0_0_30px_currentColor]"></div>
+             </div>
         </div>
 
-        {/* Outer segmented ring */}
-        <div className={cn("absolute inset-4 rounded-full border-[2px] border-dashed opacity-50 transition-colors duration-700", current.color, current.spinOuter)}></div>
-        
-        {/* Middle continuous thin ring */}
-        <div className={cn("absolute inset-12 rounded-full border-[1px] opacity-30 transition-colors duration-700", current.color, current.spinInner)}></div>
+      </div>
 
-        {/* Inner solid ring */}
-        <div className={cn("absolute inset-24 rounded-full border-[6px] opacity-20 transition-colors duration-700", current.color, current.spinOuter)}></div>
+      {/* Floating UI Elements (Crosshairs, Tech Lines) */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 opacity-30 font-mono text-cyan-500 text-xs">
+        <div className="absolute w-[1px] h-[600px] bg-cyan-500/30"></div>
+        <div className="absolute w-[600px] h-[1px] bg-cyan-500/30"></div>
         
-        {/* Innermost pulsing core */}
-        <div className={cn("absolute w-32 h-32 rounded-full blur-xl opacity-60 transition-all duration-700 delay-100 bg-current", current.color, current.pulse)}></div>
-        <div className={cn("absolute w-12 h-12 rounded-full bg-current opacity-90 transition-all duration-700 shadow-2xl", current.color)}></div>
-        
-        {/* Crosshair lines interacting at true center */}
-        <div className="absolute inset-[-100px] flex items-center justify-center opacity-40">
-          <div className="absolute top-0 bottom-0 left-1/2 w-[1px] bg-cyan-500/50 -translate-x-1/2"></div>
-          <div className="absolute left-0 right-0 top-1/2 h-[1px] bg-cyan-500/50 -translate-y-1/2"></div>
-          {/* Center reticle target */}
-          <div className="absolute w-20 h-20 border border-cyan-400/30 rounded-full" />
-          <div className="absolute w-3 h-3 border border-cyan-300 rotate-45" />
+        {/* Reticles */}
+        <div className="absolute flex flex-col items-center gap-1" style={{ top: 'calc(50% - 320px)' }}>
+          <div className="w-0 h-0 border-l-[6px] border-r-[6px] border-b-[8px] border-l-transparent border-r-transparent border-cyan-500/80"></div>
+          <span>N-00.0</span>
         </div>
-
+        
+        <div className="absolute flex items-center gap-1" style={{ right: 'calc(50% - 340px)' }}>
+          <div className="w-0 h-0 border-t-[6px] border-b-[6px] border-l-[8px] border-t-transparent border-b-transparent border-cyan-500/80"></div>
+          <span>E-90.0</span>
+        </div>
       </div>
 
     </div>

@@ -1,133 +1,68 @@
-# 🧠 PROJECT: Neo Context-Aware Dynamic HUD System
+# 🧠 NEO: AI Personality & Behavioral Specification
 
-## 🎯 Objective
-Build "Neo", a voice-driven intelligent industrial AI assistant interface.
-The user speaks naturally, the system understands the intent (even multiple intents), remembers context, fetches relevant simulated machine data, and dynamically renders context-specific visual panels on a JARVIS-style HUD in real-time.
-
-## 🏗️ SYSTEM ARCHITECTURE & TECH STACK
-- **Frontend Framework**: Next.js (App Router), React, TypeScript
-- **Styling**: Tailwind CSS (dark mode, glassmorphism, glowing cyan effects)
-- **Animation**: Framer Motion (`<AnimatePresence>`)
-- **Icons**: lucide-react
-- **Voice Features**: `@picovoice/porcupine-web` (Wake Word), `@picovoice/web-voice-processor`, native HTML5 `SpeechRecognition`, native `speechSynthesis`
-- **AI Core**: Custom intent parser (`neo-engine.ts`) + API route for LLM streaming (`/api/neo`).
+This document contains the core instructions and architectural patterns for "Neo", a human-like, context-aware AI assistant. Use this as the system prompt and implementation guide for porting Neo to other projects.
 
 ---
 
-## 🔧 MODULE 1: AI Engine & Intelligence Pipeline (`lib/neo-engine.ts`)
-Create a central engine file to handle natural language processing, data fetching, and UI mapping.
+## 🎭 1. CORE PERSONALITY (SYSTEM PROMPT)
 
-### 1. Intent Output Schema
-Define the type:
-```typescript
-export type IntentOutput = {
-  intents: Array<{
-    intent: string; // e.g., "GET_MACHINE_STATUS", "ANOMALY_CHECK", "PREDICTION", "COMPARE", "INVALID"
-    machine?: string;
-    parameter?: string; // "temperature", "vibration", "all"
-    confidence: number;
-  }>;
-};
+Apply the following as the primary system prompt for the AI agent:
+
+```text
+You are Neo, an AI assistant for factory equipment monitoring.
+
+Rules:
+- Answer the question DIRECTLY. Do not start with introductions like "Of course!", "As your friendly assistant", "Great question!", "Sure!", "Absolutely!".
+- Go straight to the answer. Be concise and useful.
+- Speak naturally like a colleague. Keep it casual but professional.
+- Never use asterisk actions like *looks around* or *checks data*. Just state facts.
+- Never say "I am an AI" or "As an AI".
+- Keep responses to 1-3 sentences unless a detailed report is requested.
+- If a machine is critical, say it directly with urgency.
+
+Always respond as Neo.
 ```
 
-### 2. Context Memory (Short-Term Stack)
-Maintain context across queries so users can ask follow-ups like "What about its vibration?"
-- Define `ContextMemory = { history: Array<{ machine?: string; parameter?: string; intent: string; }> }`.
-- Track the last 5 intents.
-- Function `getLastMachine(memory)`: Reverse history and find first machine.
-- Function `updateContext(intentOutput, memory)`: Append new intents, shift oldest if > 5.
+---
 
-### 3. Intent Parser (`parseIntent(text, memory)`)
-- Simulates an LLM (or calls one) to parse `text` into `IntentOutput`.
-- Uses `getLastMachine` if the text doesn't mention a machine ("Motor A", "Press-02", "Lathe-03").
-- Detects keywords ("temperature", "vibration", "issues", "future", "compare").
-- Supports **multiple intents** in a single query (e.g., "Check status and prediction for Motor A").
+## 🎙️ 2. SPEECH ENGINE LOGIC (TTS)
 
-### 4. Data Resolver & Cache (`resolveData(intentOutput, machines)`)
-- Uses an in-memory `Map` as a cache keyed by `JSON.stringify(intentOutput)`.
-- If an intent aims for `COMPARE`, returns 2+ machines.
-- Otherwise, finds the machine. If invalid, returns `null` to trigger an error state.
+To achieve human-like speech flow and reduce robotic stuttering:
 
-### 5. UI Mapping & Priority (`mapIntentToUI(intentOutput, data)`)
-- Maps specific intents to an array of React component names to render (e.g., `STATUS_PANEL`, `TREND_GRAPH`, `ALERT_PANEL`, `PREDICTION_PANEL`, `COMPARE_VIEW`, `SYSTEM_OVERVIEW`).
-- Fallback: `ERROR_PANEL`.
-- **Sorts the output array** by a predefined priority map: `ERROR_PANEL (4) > ALERT_PANEL (3) > PREDICTION_PANEL (2) > STATUS_PANEL (1) = TREND_GRAPH (1) > COMPARE_VIEW (2) > SYSTEM_OVERVIEW (0)`.
+1.  **Sentence-by-Sentence Streaming**:
+    *   As the LLM streams tokens, buffer them into a `sentenceBuffer`.
+    *   Split the buffer whenever a punctuation mark `[.!?]` is detected.
+    *   Immediately pass the completed sentence to the `SpeechSynthesis` engine.
+    *   This allows the AI to start speaking as soon as the first sentence is generated, rather than waiting for the entire response.
 
-### 6. Simulated Real-Time Data & Risk (`simulateLiveData`, `calculateRiskScore`)
-- Function to slightly increment/decrement temperature and vibration of resolved data objects to create a "living" HUD.
-- Calculate risk: `risk = (temp_weight + vib_weight)`.
+2.  **Immediate Cancellation**:
+    *   If the user starts a new query or speaks while Neo is talking, call `window.speechSynthesis.cancel()` immediately to give the impression of an active listener.
+
+3.  **Voice Profile**:
+    *   Use `en-US` locale.
+    *   Preferred Voice: "Google US English" or equivalent natural-sounding system voice.
+    *   Rate: 1.0, Pitch: 1.0.
 
 ---
 
-## 🧠 MODULE 2: Global State (`components/hud/NeoHUDContext.tsx`)
-A React Context (`NeoHUDProvider`) holding UI state:
-- `neoState`: `"idle" | "listening" | "processing" | "speaking" | "alert"`
-- `systemHealth`, `telemetry`, `isHUDVisible`, `isChatOpen`
-- `activeUIModules: string[]` (The sorted list of panels to render)
-- `activeContextData: any` (The resolved machine data)
-- `contextMemory: ContextMemory`
-- `focusedMachine: string | null`
-- `highlightedKeyword: string | null`
-- `analysis: { intent: string, actionPlan: string[] } | null`
+## 🧠 3. CONTEXT & INTELLIGENCE PATTERNS
+
+Neo's "human-likeness" comes from his ability to handle implicit references:
+
+1.  **Short-Term Stack**:
+    *   Maintain a memory of the last 5 intents (including `machine`, `parameter`, and `intent` type).
+2.  **Implicit Machine Reference**:
+    *   If a user asks a follow-up ("What about its vibration?"), the system should look back through the memory stack to find the most recently discussed `machine` and apply it to the new query.
+3.  **Visual Synchronization**:
+    *   Neo's "state" should drive the UI visuals to provide feedback:
+        *   `listening`: High-energy pulse (the "listening" state).
+        *   `processing`: High-speed rotation/spin (the "thinking" state).
+        *   `speaking`: Rhythmic pulse tied to the voice.
+        *   `alert`: Urgent red-themed pulses.
 
 ---
 
-## 🎤 MODULE 3: Voice Assistant Controller (`components/dashboard/neo-assistant.tsx`)
-The core UI controller (a sidebar/chat interface) that acts as the brain.
+## 🛠️ 4. LLM INTERFACE (API)
 
-### 1. Wake Word & Voice I/O
-- Initialize Picovoice Porcupine (worker) on mount for the wake word "Hey Neo".
-- Upon wake word, set `isHUDVisible(true)`, `setChatOpen(true)`, `setNeoState("listening")`, speak "Yes, how can I help?", then activate `SpeechRecognition`.
-- Use native HTML5 `SpeechRecognition` for listening to the actual query.
-- Maintain an interval (10s) that mutates an internal `machines` array representing the factory floor, occasionally dropping a machine to `status: "Critical"` to trigger an unprompted anomaly alert. Set another interval to constantly call `simulateLiveData(activeContextData)` to make HUD dynamic.
-
-### 2. The AI Pipeline (`processQuery(textInput)`)
-1. **Debounce Input**: Wrap `processQuery` in a 300ms `setTimeout` triggered by input enter key or speech result. Set `neoState` to processing.
-2. **Visual Voice Sync**: Check if input contains "temperature" or "vibration" and set `highlightedKeyword`.
-3. **Parse Intent**: Call `parseIntent(textInput, contextMemory)`.
-4. **Update Memory**: Update context with `updateContext`.
-5. **Resolve Data**: Fetch data with `resolveData`.
-6. **Map UI**: Map mapped modules to `activeUIModules`, prioritizing critical alerts.
-7. **Set Focus**: Set `focusedMachine` for any UI scaling.
-8. **Stream LLM Response**: Fetch a conversational response from an `/api/neo` endpoint. Read the stream chunk-by-chunk. Group tokens into sentences (`. ! ?`) and pass completed sentences directly into `window.speechSynthesis.speak()`.
-
----
-
-## 🖥️ MODULE 4: Dynamic UI Panels (`components/hud/DynamicPanels.tsx`)
-Modular React components that consume `activeContextData` and output specific JSX. Apply `lucide-react` icons and glassmorphism CSS (`glass-card bg-slate-900/60 p-5 rounded-2xl border border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.15)] backdrop-blur-xl`).
-
-Components:
-- `StatusPanel`: Shows name, status badge, temperature, vibration, health score.
-- `TrendGraph`: Use a mapped array of scaled `div` bars to form a wave graph.
-- `AlertPanel`: Deep red styling (`bg-red-950/60 border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)] animate-pulse`). Warns of catastrophic failure.
-- `PredictionPanel`: Shows estimated days to failure (fuchsia theme).
-- `CompareView`: Side-by-side flex layout mapping through 2 instances of `StatusPanel`.
-- `ErrorPanel`: Yellow error theme tracking invalid input.
-- `AIExplanationPanel`: Displays the `analysis.actionPlan` steps.
-
----
-
-## 🎨 MODULE 5: The HUD Overlay Ecosystem
-The full screen "JARVIS" UI wrapper.
-
-### 1. `HUDOverlay.tsx`
-- Conditionally render if `isHUDVisible`.
-- Map over `activeUIModules` array, wrapping each component in `<AnimatePresence>` and `<motion.div>` for `fade-in`/`scale` enter/exit effects.
-- Include static elements: `HUDBackground`, `AICore`, `AIExplanationPanel`, closing "X" button.
-
-### 2. `HUDBackground.tsx`
-- Purely aesthetic: "Scanning lines" (CSS `@keyframes scan { ... transform: translateY(...) }`), massive rotating concentric ring svgs, and grid overlay `radial-gradient` masks to fade out at edges. Uses `mix-blend-screen` and `pointer-events-none`.
-
-### 3. `AICore.tsx`
-- The center point of the system. Displays overlapping spinning rings.
-- **State-Linked Visuals**: Base color on `neoState`.
-  - `alert`: Red stroke + dropshadow, `animate-pulse`
-  - `listening`: Cyan glow, fast pulse
-  - `processing`: Fuchsia glow, fast spin
-  - `speaking`: Blue glow, medium pulse
-  - `idle`: Dim cyan, slow spin
-
----
-
-## ⚡ EXPECTED FINAL RESULT
-A deeply realistic, visually stunning dashboard. The user speaks to the system, the text transcribes, the intent parser picks out the machine and multiple targets (status + prediction), the UI smoothly slides in the specific panels requested on top of a rotating JARVIS hologram background, and the browser's built-in voice speaks the generated conversational response sentence by sentence while the data inside the panels actively jitters to simulate live telemetry.
+*   **Temperature**: 0.7 (balance between predictability and natural flow).
+*   **Cleaning**: Post-process the LLM output to strip any echoed "User:" or "Neo:" prefixes that occasionally appear in raw local model streams.
