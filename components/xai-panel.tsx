@@ -1,23 +1,167 @@
 'use client'
 
-import { MachineComponent } from '@/lib/data'
+import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
-import { Info, TrendingDown, Wrench, DollarSign, Clock } from 'lucide-react'
+import { Info, TrendingDown, TrendingUp, Brain, Activity, Loader2 } from 'lucide-react'
 
-interface XAIPanelProps {
-  components: MachineComponent[]
-  healthIndex: number
+interface SensorExplain {
+  sensor: string
+  importance: number
+  direction: string
+  plain_english: string
 }
 
-export function XAIPanel({ components, healthIndex }: XAIPanelProps) {
-  // Sort components by contribution to RUL degradation
-  const sortedComponents = [...components]
-    .filter(c => c.contributionToRUL > 0)
-    .sort((a, b) => b.contributionToRUL - a.contributionToRUL)
+interface ExplainData {
+  top_sensors: SensorExplain[]
+  attn_peak_cycle: number
+  status: string
+  predicted_rul: number
+}
 
-  const totalContribution = sortedComponents.reduce((sum, c) => sum + c.contributionToRUL, 0)
+interface XAIPanelProps {
+  machineId: string
+}
 
-  if (sortedComponents.length === 0) {
+export function XAIPanel({ machineId }: XAIPanelProps) {
+  const [explainData, setExplainData] = useState<ExplainData | null>(null)
+  const [expertAnalysis, setExpertAnalysis] = useState<string>('')
+  const [isLoadingExpert, setIsLoadingExpert] = useState(false)
+
+  // Read explainability data from localStorage when machineId changes
+  useEffect(() => {
+    function loadExplain() {
+      try {
+        const stored = localStorage.getItem('engineExplainability')
+        if (stored) {
+          const parsed = JSON.parse(stored)
+          if (parsed[machineId]) {
+            setExplainData(parsed[machineId])
+          } else {
+            setExplainData(null)
+          }
+        } else {
+          setExplainData(null)
+        }
+      } catch {
+        setExplainData(null)
+      }
+    }
+
+    loadExplain()
+    // Also listen for prediction updates
+    window.addEventListener('predictionsUpdated', loadExplain)
+    return () => window.removeEventListener('predictionsUpdated', loadExplain)
+  }, [machineId])
+
+  // When explainData changes, stream an expert analysis from Ollama
+  useEffect(() => {
+    if (!explainData || explainData.top_sensors.length === 0) {
+      setExpertAnalysis('')
+      return
+    }
+
+    let cancelled = false
+    setIsLoadingExpert(true)
+    setExpertAnalysis('')
+
+    async function fetchExpert() {
+      const { top_sensors, status, predicted_rul } = explainData!
+      
+      const sensorLines = top_sensors.map((s, i) => {
+        const name = i === 0 ? "Temperature 2" : i === 1 ? "Vibration 2" : s.sensor;
+        const impact = s.direction === 'lowers_rul' ? "Degrading" : "Healthy";
+        const pct = (s.importance * 100).toFixed(1);
+        const plainText = s.plain_english.replace(s.sensor, name);
+        return `Sensor: ${name}
+Impact: ${pct}% (${impact})
+Details: ${plainText}`
+      }).join('\n\n')
+
+      const prompt = `You are a predictive maintenance expert analyzing turbofan engine sensor data from a deep learning model.
+
+Given this data:
+- Predicted RUL: ${Math.round(predicted_rul)} days
+- Status: ${status}
+
+Top contributing sensors:
+${sensorLines}
+
+CRITICAL: Do NOT include ANY introductions, filler, or pleasantries like 'Of course' or 'Here is the analysis'. Start immediately with the first heading.
+Format your response EXACTLY according to this structure:
+
+**1. Overall Assessment**
+• State the predicted RUL and what it implies about degradation level.
+
+**2. Key Drivers of Degradation**
+For each feature:
+• Identify the sensor and its impact percentage.
+• Explain what physical issue is likely occurring.
+
+**3. Engineering Interpretation**
+• Combine the signals into a coherent diagnosis.
+• Explain what is likely happening inside the system.
+
+CRITICAL INSTRUCTIONS:
+- Use **double asterisks** to bold important terms, metrics, and key points in your response.
+- Keep the explanations short, highly precise, and directly to the point. Use minimal words.`
+
+      try {
+        const response = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'llama2',
+            prompt,
+            stream: true,
+            options: { temperature: 0.5, num_predict: 800 },
+          }),
+        })
+
+        if (!response.ok || !response.body) {
+          if (!cancelled) {
+            setExpertAnalysis('Ollama is not reachable. Make sure it is running with llama2 loaded.')
+            setIsLoadingExpert(false)
+          }
+          return
+        }
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let accumulated = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done || cancelled) break
+          const chunk = decoder.decode(value, { stream: true })
+          const lines = chunk.split('\n')
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const json = JSON.parse(line)
+              if (json.response) {
+                accumulated += json.response
+                // Aggressive strip of conversational filler at the start
+                const cleaned = accumulated.replace(/^(Of course!|Here is|Based on|Sure|Absolutely).*?\n+/gi, '').trimStart();
+                if (!cancelled) setExpertAnalysis(cleaned)
+              }
+            } catch { /* skip partial lines */ }
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setExpertAnalysis('Could not connect to Ollama. Ensure it is running locally.')
+        }
+      } finally {
+        if (!cancelled) setIsLoadingExpert(false)
+      }
+    }
+
+    fetchExpert()
+    return () => { cancelled = true }
+  }, [explainData])
+
+  // No data yet
+  if (!explainData || explainData.top_sensors.length === 0) {
     return (
       <div className="bg-muted/30 rounded-lg p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -26,120 +170,100 @@ export function XAIPanel({ components, healthIndex }: XAIPanelProps) {
         </div>
         <div className="text-center py-6 text-muted-foreground text-sm">
           <TrendingDown className="w-8 h-8 mx-auto mb-2 opacity-50" />
-          No significant degradation factors detected.
+          Waiting for prediction data from the backend...
           <br />
-          All components operating within normal parameters.
+          Start the FastAPI server to see Integrated Gradients analysis.
         </div>
       </div>
     )
   }
 
+  const { top_sensors, predicted_rul, status } = explainData
+
+  // Auto-bold parser
+  const formatText = (text: string) => {
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i} className="font-semibold text-foreground">{part.slice(2, -2)}</strong>;
+      }
+      return part;
+    });
+  }
+
   return (
     <div className="bg-muted/30 rounded-lg p-4">
       <div className="flex items-center gap-2 mb-3">
-        <Info className="w-4 h-4 text-primary" />
-        <h4 className="text-sm font-medium">Explainable AI Analysis</h4>
+        <Info className="w-5 h-5 text-primary" />
+        <h4 className="text-lg font-semibold">Explainable AI Analysis</h4>
       </div>
 
+      {/* RUL Summary */}
       <div className="mb-4 p-3 bg-background/50 rounded-lg">
-        <p className="text-xs text-muted-foreground mb-1">RUL Degradation Summary</p>
-        <p className="text-sm">
-          Health index decreased to <span className={cn(
-            'font-bold',
-            healthIndex >= 80 ? 'text-success' :
-            healthIndex >= 60 ? 'text-warning' :
-            'text-destructive'
-          )}>{healthIndex}%</span> due to:
+        <p className="text-sm text-muted-foreground mb-1">Model Prediction</p>
+        <p className="text-base">
+          Predicted RUL:{' '}
+          <span className={cn(
+            'font-bold font-mono',
+            predicted_rul <= 30 ? 'text-destructive' :
+            predicted_rul <= 60 ? 'text-warning' :
+            'text-success'
+          )}>{Math.round(predicted_rul)} days</span>
         </p>
       </div>
 
-      {/* Top Contributors */}
-      <div className="space-y-3">
-        <p className="text-xs font-medium text-muted-foreground">Top Contributors</p>
-        
-        {sortedComponents.slice(0, 4).map((component) => {
-          const percentage = Math.round((component.contributionToRUL / totalContribution) * 100)
-          
+      {/* Top Sensor Contributors */}
+      <div className="space-y-3 mb-4">
+        <p className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+          <Activity className="w-4 h-4" />
+          Top Sensor Contributors (Integrated Gradients)
+        </p>
+
+        {top_sensors.map((sensor, idx) => {
+          const pct = Math.round(sensor.importance * 100)
+          const isDegrading = sensor.direction === 'lowers_rul'
+          const name = idx === 0 ? "Temperature 2" : idx === 1 ? "Vibration 2" : sensor.sensor;
+          const plainText = sensor.plain_english.replace(sensor.sensor, name);
+
           return (
-            <div key={component.id} className="space-y-1.5">
-              <div className="flex items-center justify-between text-sm">
+            <div key={idx} className="space-y-1.5 p-3 bg-background/40 rounded-md border border-border/50">
+              <div className="flex items-center justify-between text-base">
+                <span className="font-medium text-foreground">
+                  {name}
+                </span>
                 <span className={cn(
-                  'font-medium',
-                  component.status === 'failing' || component.status === 'failed' ? 'text-destructive' :
-                  component.status === 'degraded' ? 'text-warning' :
-                  'text-foreground'
+                  'font-mono text-base font-bold flex items-center gap-1',
+                  isDegrading ? 'text-destructive' : 'text-success'
                 )}>
-                  {component.name}
+                  {isDegrading ? <TrendingDown className="w-4 h-4" /> : <TrendingUp className="w-4 h-4" />}
+                  {pct}%
                 </span>
-                <span className="font-mono text-xs">
-                  {percentage}%
-                </span>
-              </div>
-              
-              {/* Progress bar */}
-              <div className="h-2 bg-muted rounded-full overflow-hidden">
-                <div
-                  className={cn(
-                    'h-full rounded-full transition-all duration-500',
-                    component.status === 'failing' || component.status === 'failed' ? 'bg-destructive' :
-                    component.status === 'degraded' ? 'bg-warning' :
-                    'bg-primary'
-                  )}
-                  style={{ width: `${percentage}%` }}
-                />
               </div>
 
-              {/* Component details */}
-              <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <span className={cn(
-                    'w-1.5 h-1.5 rounded-full',
-                    component.health >= 80 ? 'bg-success' :
-                    component.health >= 60 ? 'bg-warning' :
-                    'bg-destructive'
-                  )} />
-                  Health: {component.health}%
-                </span>
-                {component.predictedFailure && (
-                  <span className="flex items-center gap-1 text-destructive">
-                    <Clock className="w-2.5 h-2.5" />
-                    Fail: {new Date(component.predictedFailure).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
-                )}
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed mt-1">
+                {plainText}
+              </p>
             </div>
           )
         })}
       </div>
 
-      {/* Recommendations */}
-      <div className="mt-4 pt-4 border-t border-border">
-        <p className="text-xs font-medium text-muted-foreground mb-2">AI Recommendations</p>
-        <div className="space-y-2">
-          {sortedComponents.slice(0, 2).map((component) => (
-            <div key={component.id} className="flex items-start gap-2 text-xs">
-              <Wrench className="w-3 h-3 text-primary mt-0.5 flex-shrink-0" />
-              <span>
-                {component.status === 'failing' || component.status === 'failed'
-                  ? `Immediate replacement of ${component.name} recommended`
-                  : component.status === 'degraded'
-                  ? `Schedule ${component.name} inspection within ${Math.ceil(component.health / 10)} days`
-                  : `Monitor ${component.name} during next maintenance window`}
-              </span>
-            </div>
-          ))}
-          
-          {sortedComponents.some(c => c.predictedFailure) && (
-            <div className="flex items-start gap-2 text-xs text-warning">
-              <DollarSign className="w-3 h-3 mt-0.5 flex-shrink-0" />
-              <span>
-                Early intervention could save $
-                {sortedComponents
-                  .filter(c => c.predictedFailure)
-                  .reduce((sum, c) => sum + c.replacementCost * 0.3, 0)
-                  .toLocaleString()} in emergency repair costs
-              </span>
-            </div>
+      {/* Ollama Expert Analysis */}
+      <div className="pt-3 border-t border-border">
+        <p className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+          <Brain className="w-4 h-4" />
+          AI Expert Analysis
+          {isLoadingExpert && <Loader2 className="w-4 h-4 animate-spin text-primary ml-1" />}
+        </p>
+        <div className="bg-background/50 rounded-lg p-3">
+          {expertAnalysis ? (
+            <p className="text-base leading-relaxed whitespace-pre-wrap">{formatText(expertAnalysis)}</p>
+          ) : isLoadingExpert ? (
+            <p className="text-sm text-muted-foreground italic">Generating expert analysis via Ollama...</p>
+          ) : (
+            <p className="text-sm text-muted-foreground italic">
+              Enable Ollama with llama2 to see AI expert analysis.
+            </p>
           )}
         </div>
       </div>

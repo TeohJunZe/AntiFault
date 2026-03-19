@@ -697,8 +697,7 @@ export default function DigitalTwinDashboard() {
                     <Card className="lg:col-span-2">
                       <CardContent className="pt-6">
                         <XAIPanel
-                          components={selectedMachine.components}
-                          healthIndex={selectedMachine.healthIndex}
+                          machineId={selectedMachine.id}
                         />
                       </CardContent>
                     </Card>
