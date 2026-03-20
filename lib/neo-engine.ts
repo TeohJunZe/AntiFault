@@ -53,14 +53,20 @@ export async function parseIntent(text: string, memory: ContextMemory): Promise<
   // Try finding machine
   let machineStr: string | undefined = undefined;
   if (lower.includes('motor a') || lower.includes('motor-a')) machineStr = 'Motor-A';
-  else if (lower.includes('press-02') || lower.includes('press 02')) machineStr = 'Press-02';
+  else if (lower.includes('press-02') || lower.includes('press 02') || lower.includes('hydraulic press')) machineStr = 'hydraulic press';
   else if (lower.includes('lathe')) machineStr = 'Lathe-03';
+  else if (lower.includes('pump')) machineStr = 'pump';
+  else if (lower.includes('compressor')) machineStr = 'compressor';
+  else if (lower.includes('mill') || lower.includes('cnc')) machineStr = 'cnc mill';
+  else if (lower.includes('conveyor')) machineStr = 'conveyor';
   else {
     machineStr = getLastMachine(memory);
   }
 
   if (lower.includes('compare')) {
     intents.push({ intent: 'COMPARE', confidence: 0.9, machine: machineStr });
+  } else if (lower.includes('schedule') && lower.includes('maintenance')) {
+    intents.push({ intent: 'SCHEDULE_MAINTENANCE', confidence: 0.9, machine: machineStr });
   } else if (lower.includes('predict') || lower.includes('future') || lower.includes('when')) {
     intents.push({ intent: 'PREDICTION', confidence: 0.8, machine: machineStr });
   } else if (lower.includes('alert') || lower.includes('issue') || lower.includes('urgent') || lower.includes('anomaly')) {
@@ -110,6 +116,9 @@ export function mapIntentToUI(intentOutput: IntentOutput, data: any): string[] {
         if (intent.parameter === 'temperature' || intent.parameter === 'vibration') {
           panels.add('TREND_GRAPH');
         }
+        break;
+      case 'SCHEDULE_MAINTENANCE':
+        panels.add('MAINTENANCE_PANEL');
         break;
       case 'PREDICTION':
         panels.add('STATUS_PANEL');

@@ -180,6 +180,48 @@ export function MaintenanceBoard({ machines, onMachineSelect, focusedMachineId, 
     }
   }, [focusedMachineId, onFocusClear])
 
+  // ---- auto schedule effect ----
+  useEffect(() => {
+    const handleAutoSchedule = (e: CustomEvent<{ machineId: string }>) => {
+      const { machineId } = e.detail;
+      const date = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+      const time = '14:30';
+      const technician = 'Sarah Connor';
+      const notes = 'AI auto-scheduled based on voice command.';
+      
+      // Step 1: Open empty form and focus
+      setScheduleForm({ machineId, date: '', time: '', technician: '', notes: '' });
+      setHighlightId(machineId);
+      
+      setTimeout(() => {
+        const el = cardRefs.current[machineId]
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+        }
+      }, 100);
+
+      // Step 2-5: Animate typing/filling fields
+      setTimeout(() => setScheduleForm(p => p ? { ...p, date } : null), 1200);
+      setTimeout(() => setScheduleForm(p => p ? { ...p, time } : null), 1800);
+      setTimeout(() => setScheduleForm(p => p ? { ...p, technician } : null), 2400);
+      setTimeout(() => setScheduleForm(p => p ? { ...p, notes } : null), 3000);
+
+      // Step 6: Confirm and save
+      setTimeout(() => {
+        const entry: ScheduledEntry = { machineId, scheduledDate: date, scheduledTime: time, technician, notes, scheduledAt: new Date().toISOString() };
+        setScheduled(prev => {
+          const updated = [...prev.filter(s => s.machineId !== machineId), entry];
+          localStorage.setItem(STORAGE_KEY_SCHEDULED, JSON.stringify(updated));
+          return updated;
+        });
+        setScheduleForm(null);
+      }, 4000);
+    };
+
+    window.addEventListener('neo-auto-schedule', handleAutoSchedule as EventListener);
+    return () => window.removeEventListener('neo-auto-schedule', handleAutoSchedule as EventListener);
+  }, []);
+
   // ---- actions ----
   const handleSchedule = (machineId: string, date: string, time: string, technician: string, notes: string) => {
     const entry: ScheduledEntry = { machineId, scheduledDate: date, scheduledTime: time, technician, notes, scheduledAt: new Date().toISOString() }

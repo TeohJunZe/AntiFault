@@ -12,21 +12,8 @@ export const metadata: Metadata = {
   description: 'Industrial IoT AntiFault platform for predictive maintenance with 3D visualization, AI-powered diagnostics, and real-time machine health monitoring.',
   generator: 'v0.app',
   icons: {
-    icon: [
-      {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
-      },
-    ],
-    apple: '/apple-icon.png',
+    icon: '/transparent-logo.png',
+    apple: '/transparent-logo.png',
   },
 }
 

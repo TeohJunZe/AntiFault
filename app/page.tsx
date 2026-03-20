@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   mockMachines,
@@ -55,7 +56,7 @@ import {
 const LAYOUT_KEY = 'factoryFloorLayout'
 
 export default function DigitalTwinDashboard() {
-  const { setHUDVisible, isChatOpen, isHUDVisible } = useNeoHUD()
+  const { setHUDVisible, isChatOpen, isHUDVisible, activeUIModules, activeContextData, setChatOpen, setActiveUIModules } = useNeoHUD()
   const [machines, setMachines] = useState<Machine[]>(() => {
     if (typeof window === 'undefined') return mockMachines
     try {
@@ -208,6 +209,24 @@ export default function DigitalTwinDashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [alerts])
 
+  // Neo Intent handler for maintenance
+  useEffect(() => {
+    if (activeUIModules.includes('MAINTENANCE_PANEL') && activeContextData) {
+      setDashboardTab('maintenance');
+      setFocusedMachineId(activeContextData.id);
+      setHUDVisible(false);
+      setChatOpen(false);
+      
+      // Allow the layout to shift before firing the event to auto-schedule
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('neo-auto-schedule', { detail: { machineId: activeContextData.id } }));
+      }, 500);
+      
+      // Clear the intent so it doesn't fire again
+      setActiveUIModules(['SYSTEM_OVERVIEW']);
+    }
+  }, [activeUIModules, activeContextData, setHUDVisible, setChatOpen, setActiveUIModules]);
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -229,8 +248,14 @@ export default function DigitalTwinDashboard() {
               </Button>
             )}
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
-                <Factory className="w-5 h-5 text-primary" />
+              <div className="w-10 h-10 flex items-center justify-center overflow-hidden">
+                <Image 
+                  src="/transparent-logo.png" 
+                  alt="AntiFault Logo" 
+                  width={32} 
+                  height={32} 
+                  className="object-contain"
+                />
               </div>
               <div>
                 <h1 className="font-semibold text-lg">

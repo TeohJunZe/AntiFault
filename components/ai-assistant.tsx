@@ -44,6 +44,20 @@ function speakSentence(text: string) {
   utterance.lang = 'en-US';
   utterance.rate = 1.0;
   utterance.pitch = 1.0;
+
+  // Prevent Chrome bug where utterance is garbage collected before it speaks
+  (window as any)._neoSpeechUtterances = (window as any)._neoSpeechUtterances || [];
+  (window as any)._neoSpeechUtterances.push(utterance);
+  
+  utterance.onend = () => {
+    // Cleanup
+    const arr = (window as any)._neoSpeechUtterances;
+    if (arr) {
+      const idx = arr.indexOf(utterance);
+      if (idx !== -1) arr.splice(idx, 1);
+    }
+  };
+
   window.speechSynthesis.speak(utterance);
 }
 
@@ -101,9 +115,12 @@ export function AIAssistant({
     const recognitionRef = useRef<any>(null);
     const porcupineRef = useRef<any>(null);
 
+    const wakeWordEnabledRef = useRef(wakeWordEnabled);
+    useEffect(() => { wakeWordEnabledRef.current = wakeWordEnabled; }, [wakeWordEnabled]);
+
     // Auto-scroll
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }, [messages]);
 
     // Load voices
@@ -161,6 +178,29 @@ export function AIAssistant({
             else if (promptText.toLowerCase().includes("vibration")) setHighlightedKeyword("vibration");
             else setHighlightedKeyword(null);
 
+            const isScheduleIntent = intentOutput.intents.some(i => i.intent === 'SCHEDULE_MAINTENANCE');
+            if (isScheduleIntent && resolvedData) {
+                const machine = (resolvedData as any);
+                const rText = `The ${machine.name} is currently in a ${machine.status} state with a health index of ${machine.healthIndex}%. I have automatically scheduled maintenance for Sarah Connor tomorrow at 2:30 PM. The schedule is now confirmed.`;
+
+                setNeoState('speaking');
+                setMessages(prev => [...prev, { role: 'assistant', content: rText }]);
+                speakSentence(rText);
+
+                if (uiModules.includes('ALERT_PANEL')) {
+                    setNeoState('alert');
+                } else {
+                    setNeoState('idle');
+                }
+                
+                setIsProcessing(false);
+                if (wakeWordEnabledRef.current && !wakeActiveRef.current) {
+                    wakeActiveRef.current = true;
+                    setTimeout(() => runWakeSession.current(), 1500);
+                }
+                return;
+            }
+
             // Build context for LLM
             const machinesSummary = machines.map(m =>
                 `${m.name}: status=${m.status}, health=${m.healthIndex}%, RUL=${m.rul}d`
@@ -212,6 +252,10 @@ export function AIAssistant({
             setNeoState('idle');
         } finally {
             setIsProcessing(false);
+            if (wakeWordEnabledRef.current && !wakeActiveRef.current) {
+                wakeActiveRef.current = true;
+                setTimeout(() => runWakeSession.current(), 1500);
+            }
         }
     }, [isProcessing, contextMemory, machines, alerts, selectedMachine, setNeoState, setContextMemory, setActiveContextData, setActiveUIModules, setAnalysis, setFocusedMachine, setHighlightedKeyword, setTelemetry, setCurrentResponseToken]);
 
@@ -286,10 +330,11 @@ export function AIAssistant({
                     wakeActiveRef.current = false;
                     rec.abort();
                     addLog("Wake: Hey Neo detected");
-                    setChatOpen(true);
+                    // setChatOpen(true); // User requested HUD without chatbar
                     setHUDVisible(true);
                     setNeoState('listening');
-                    speakSentence("Yes I'm here.");
+                    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+                    speakSentence("Hey, I am here.");
                     setTimeout(() => startSTTRef.current(), 1500);
                     return;
                 }
