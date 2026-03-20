@@ -11,6 +11,12 @@ AntiFault is an advanced Predictive Maintenance Platform and Digital Twin Dashbo
    - Neo can interact directly with the UI, auto-routing you to relevant dashboard pages.
    - Schedule maintenance simply by talking to Neo (e.g., *"Hey Neo, help me to schedule maintenance of hydraulic press"*).
 
+## Predictive Analysis Model
+
+For details on the predictive analysis model that powers our Remaining Useful Life (RUL) prediction, please refer to the dedicated repository:
+- **GitHub Repository:** [Predictive-Maintainance-RUL-Prediction-Model](https://github.com/yongjeen2409/Predictive-Maintainance-RUL-Prediction-Model.git)
+- **Streamlit App Demo:** [View Model Result Here](https://predictive-maintainance-rul-prediction-model-sorite-gang.streamlit.app/)
+
 ## Setup Instructions
 
 Follow these step-by-step instructions to get the system up and running:
@@ -18,7 +24,11 @@ Follow these step-by-step instructions to get the system up and running:
 ### 1. Prerequisites
 - Node.js (v18 or higher recommended)
 - Python 3.10+ (for the local AI backend)
-- Ollama (installed locally for running the `llama2` or other local models)
+- Ollama (installed locally for running the `llama2` or other local models). Download from [Ollama.com](https://ollama.com/).
+  - After installing Ollama, you must pull and run the `llama2` model. Open a terminal and run:
+    ```cmd
+    ollama run llama2
+    ```
 
 ### 2. Environment Variables & API Keys
 To enable the "Hey Neo" voice wake word, you must configure your Picovoice/Porcupine API access keys.
