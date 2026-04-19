@@ -119,6 +119,13 @@ export function MachineViewer3D({
                   attn_peak_cycle: data.attn_peak_cycle ?? 0,
                   status: data.status || '',
                   predicted_rul: data.predicted_rul,
+                  risk_level: data.risk_level || '',
+                  recommendation: data.recommendation || '',
+                  confidence_note: data.confidence_note || '',
+                  report_text: data.report_text || '',
+                  uncertainty_sigma: data.uncertainty_sigma ?? 0,
+                  anomaly_z: data.anomaly_z ?? 0,
+                  suspected_components: data.suspected_components || [],
                 }
                 localStorage.setItem('engineExplainability', JSON.stringify(existing))
               } catch (e) {

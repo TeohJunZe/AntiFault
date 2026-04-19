@@ -67,6 +67,13 @@ class InferenceResponse(BaseModel):
     # ── explainability fields ──────────────────────────────────────────
     top_sensors:     List[SensorExplanation]  # always 2 entries
     attn_peak_cycle: int   # which of the last SEQ_LEN cycles the model focused on most
+    risk_level:      str
+    recommendation:  str
+    confidence_note: str
+    report_text:     str
+    uncertainty_sigma: float = 0.0
+    anomaly_z: float = 0.0
+    suspected_components: List[str] = []
 
 # ==========================================
 # 3. MODEL ARCHITECTURE
@@ -308,6 +315,14 @@ def load_deploy_bundle():
     # ── Component map ──────────────────────────────────────────────────
     pp = bundle['preprocessing']
     COMPONENT_MAP = pp.get('component_map', {})
+    if not COMPONENT_MAP:
+        # Fallback CMAPSS component map mapping sensor names to components
+        COMPONENT_MAP = {
+            "HPC (High Pressure Compressor)": ["sensor_2", "sensor_3", "sensor_11"],
+            "LPT (Low Pressure Turbine)": ["sensor_4", "sensor_13", "sensor_14", "sensor_15"],
+            "Fan & Bypass": ["sensor_8", "sensor_9", "sensor_12"],
+            "Combustor & Core": ["sensor_7", "sensor_17", "sensor_20", "sensor_21"]
+        }
 
     # ── Calibration & risk ─────────────────────────────────────────────
     CALIBRATION_STATS = bundle.get('calibration')
@@ -658,6 +673,56 @@ async def predict_rul(request: InferenceRequest):
     else:
         status = "HEALTHY"
 
+    # Infer risk
+    if final_rul <= 30 or anomaly_z >= 2.0:
+        risk_level = "high"
+    elif final_rul <= 60 or anomaly_z >= 1.0:
+        risk_level = "medium"
+    else:
+        risk_level = "low"
+
+    # Infer confidence note
+    uncertainty_sigma = round(np.sqrt(np.mean(ensemble_vars)), 2)
+    supported_components = len(top_sensors)
+    if uncertainty_sigma >= 10.0:
+        confidence_note = "High predictive uncertainty; use this output as a screening signal only."
+    elif supported_components == 0:
+        confidence_note = "Low anomaly support; attribution remains weak and proxy-based."
+    elif anomaly_z >= 2.0:
+        confidence_note = "Strong anomaly signal; attribution is still a proxy-based ranking, not confirmed diagnosis."
+    else:
+        confidence_note = "Moderate confidence: proxy-based ranking supported by calibrated anomaly evidence."
+
+    # Infer recommendation
+    if risk_level == "high":
+        recommendation = "Immediate inspection is recommended; verify sensor integrity and inspect the top-ranked components."
+    elif risk_level == "medium":
+        recommendation = "Schedule inspection soon and monitor the top-ranked components for worsening behavior."
+    else:
+        recommendation = "Continue monitoring; no urgent intervention is indicated from the current evidence."
+
+    # Build report text
+    comp_scores = _aggregate_to_components(fused_scores)
+    top_comps = sorted(comp_scores.items(), key=lambda x: x[1], reverse=True)[:2]
+    components_text = ", and ".join([f"**{k}** (Severity: {v:.2f})" for k, v in top_comps]) if top_comps else "none"
+
+    sensors = ", ".join([s.sensor for s in top_sensors[:5]]) or "none"
+    report_text = "\n\n".join([
+        f"Asset **{request.engine_id}** (current reading cycle) has predicted RUL **{final_rul:.2f}**.",
+        f"Uncertainty sigma is **{uncertainty_sigma:.2f}**; anomaly z-score is **{anomaly_z:.2f}**; risk level is **{risk_level.capitalize()}**.",
+        f"Failing Part Detection / Suspected anomaly source:\n{components_text}",
+        f"Top contributing sensors: **{sensors}**.",
+        f"Recommendation: **{recommendation}**",
+        f"Confidence note: **{confidence_note}**"
+    ])
+
+    import math
+    suspected_components = []
+    for k, v in top_comps:
+        # Asymptotic mapping to keep severity between 0-100%
+        severity_pct = (1.0 - math.exp(-v / 400.0)) * 100.0
+        suspected_components.append(f"{k} (Severity: {severity_pct:.1f}%)")
+    
     return InferenceResponse(
         engine_id=request.engine_id,
         predicted_rul=round(final_rul, 1),
@@ -666,6 +731,13 @@ async def predict_rul(request: InferenceRequest):
         status=status,
         top_sensors=top_sensors,
         attn_peak_cycle=attn_peak_cycle,
+        risk_level=risk_level,
+        recommendation=recommendation,
+        confidence_note=confidence_note,
+        report_text=report_text,
+        uncertainty_sigma=round(uncertainty_sigma, 2),
+        anomaly_z=round(anomaly_z, 2),
+        suspected_components=suspected_components
     )
 
 # ==========================================

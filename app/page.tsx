@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import {
   mockMachines,
   mockAlerts,
@@ -57,14 +57,16 @@ const LAYOUT_KEY = 'factoryFloorLayout'
 
 export default function DigitalTwinDashboard() {
   const { setHUDVisible, isChatOpen, isHUDVisible, activeUIModules, activeContextData, setChatOpen, setActiveUIModules } = useNeoHUD()
-  const [machines, setMachines] = useState<Machine[]>(() => {
-    if (typeof window === 'undefined') return mockMachines
+  const [machines, setMachines] = useState<Machine[]>(mockMachines)
+  const isHydrated = useRef(false)
+
+  useEffect(() => {
     try {
       const saved = localStorage.getItem(LAYOUT_KEY)
-      if (saved) return JSON.parse(saved) as Machine[]
+      if (saved) setMachines(JSON.parse(saved) as Machine[])
     } catch { }
-    return mockMachines
-  })
+    isHydrated.current = true
+  }, [])
   const [tasks] = useState(mockMaintenanceTasks)
   const [hiddenAlertIds, setHiddenAlertIds] = useState<Set<string>>(new Set())
   const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<Set<string>>(new Set())
@@ -143,6 +145,7 @@ export default function DigitalTwinDashboard() {
 
   // Persist layout changes
   useEffect(() => {
+    if (!isHydrated.current) return
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(machines))
     } catch { }

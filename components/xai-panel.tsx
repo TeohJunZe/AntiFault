@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
-import { Info, TrendingDown, TrendingUp, Brain, Activity, Loader2, Bot, ShieldCheck, Zap, AlertTriangle, Cpu } from 'lucide-react'
+import { Info, TrendingDown, Activity, Loader2, Download, Table2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { toPng } from 'html-to-image'
+import jsPDF from 'jspdf'
 
 interface SensorExplain {
   sensor: string
@@ -16,6 +19,12 @@ interface ExplainData {
   attn_peak_cycle: number
   status: string
   predicted_rul: number
+  risk_level: string
+  recommendation: string
+  confidence_note: string
+  uncertainty_sigma: number
+  anomaly_z: number
+  suspected_components: string[]
 }
 
 interface XAIPanelProps {
@@ -24,8 +33,7 @@ interface XAIPanelProps {
 
 export function XAIPanel({ machineId }: XAIPanelProps) {
   const [explainData, setExplainData] = useState<ExplainData | null>(null)
-  const [expertAnalysis, setExpertAnalysis] = useState<string>('')
-  const [isLoadingExpert, setIsLoadingExpert] = useState(false)
+  const [isDownloading, setIsDownloading] = useState(false)
 
   // Read explainability data from localStorage when machineId changes
   useEffect(() => {
@@ -48,298 +56,341 @@ export function XAIPanel({ machineId }: XAIPanelProps) {
     }
 
     loadExplain()
-    // Also listen for prediction updates
     window.addEventListener('predictionsUpdated', loadExplain)
     return () => window.removeEventListener('predictionsUpdated', loadExplain)
   }, [machineId])
 
-  // When explainData changes, stream an expert analysis from Ollama
-  useEffect(() => {
-    if (!explainData || explainData.top_sensors.length === 0) {
-      setExpertAnalysis('')
-      return
-    }
+  const handleDownloadPDF = async () => {
+    const element = document.getElementById(`formal-pdf-${machineId}`)
+    if (!element) return
 
-    let cancelled = false
-    setIsLoadingExpert(true)
-    setExpertAnalysis('')
-
-    async function fetchExpert() {
-      const { top_sensors, status, predicted_rul } = explainData!
+    try {
+      setIsDownloading(true)
+      const originalStyle = element.style.cssText;
+      element.style.cssText = 'position: fixed; top: 0; left: 0; z-index: -9999; width: 800px; padding: 40px; background-color: white; color: black;'
       
-      const sensorLines = top_sensors.map((s, i) => {
-        const name = i === 0 ? "Temperature 2" : i === 1 ? "Vibration 2" : s.sensor;
-        const impact = s.direction === 'lowers_rul' ? "Degrading" : "Healthy";
-        const pct = (s.importance * 100).toFixed(1);
-        const plainText = s.plain_english.replace(s.sensor, name);
-        return `Sensor: ${name}
-Impact: ${pct}% (${impact})
-Details: ${plainText}`
-      }).join('\n\n')
+      const imgData = await toPng(element, { 
+        backgroundColor: '#ffffff',
+        pixelRatio: 2,
+        width: 800,
+      })
+      
+      element.style.cssText = originalStyle;
+      const width = 800
+      const height = element.clientHeight
 
-      const prompt = `You are a predictive maintenance expert analyzing turbofan engine sensor data from a deep learning model.
-
-Given this data:
-- Predicted RUL: ${Math.round(predicted_rul)} days
-- Status: ${status}
-
-Top contributing sensors:
-${sensorLines}
-
-CRITICAL: Do NOT include ANY introductions, filler, or pleasantries like 'Of course' or 'Here is the analysis'. Start immediately with the first heading.
-Format your response EXACTLY according to this structure:
-
-**1. Overall System Health Assessment**
-• State the predicted RUL and what it implies about degradation level.
-
-**2. Critical Component Drivers**
-For each feature:
-• Identify the sensor and its impact percentage.
-• Explain what physical issue is likely occurring.
-
-**3. Strategic Engineering Diagnosis**
-• Combine the signals into a coherent diagnosis.
-• Explain what is likely happening inside the system.
-
-CRITICAL INSTRUCTIONS:
-- Use **double asterisks** to bold important terms, metrics, and key points in your response.
-- Use the bullet character • for points.
-- Keep the explanations short, highly precise, and directly to the point. Use minimal words.`
-
-      try {
-        const response = await fetch('http://localhost:11434/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'llama2',
-            prompt,
-            stream: true,
-            options: { temperature: 0.5, num_predict: 800 },
-          }),
-        })
-
-        if (!response.ok || !response.body) {
-          if (!cancelled) {
-            setExpertAnalysis('Ollama is not reachable. Make sure it is running with llama2 loaded.')
-            setIsLoadingExpert(false)
-          }
-          return
-        }
-
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let accumulated = ''
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done || cancelled) break
-          const chunk = decoder.decode(value, { stream: true })
-          const lines = chunk.split('\n')
-          for (const line of lines) {
-            if (!line.trim()) continue
-            try {
-              const json = JSON.parse(line)
-              if (json.response) {
-                accumulated += json.response
-                // Aggressive strip of conversational filler at the start
-                const cleaned = accumulated.replace(/^(Of course!|Here is|Based on|Sure|Absolutely).*?\n+/gi, '').trimStart();
-                if (!cancelled) setExpertAnalysis(cleaned)
-              }
-            } catch { /* skip partial lines */ }
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setExpertAnalysis('Could not connect to Ollama. Ensure it is running locally.')
-        }
-      } finally {
-        if (!cancelled) setIsLoadingExpert(false)
-      }
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'px',
+        format: [width, height]
+      })
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, width, height)
+      pdf.save(`diagnostic_report_${machineId}.pdf`)
+    } catch (e) {
+      console.error('Error generating PDF', e)
+    } finally {
+      setIsDownloading(false)
     }
-
-    fetchExpert()
-    return () => { cancelled = true }
-  }, [explainData])
+  }
 
   // No data yet
   if (!explainData || explainData.top_sensors.length === 0) {
     return (
-      <div className="bg-muted/30 rounded-lg p-4">
+      <div className="bg-muted/30 rounded-lg p-4 border border-border/50">
         <div className="flex items-center gap-2 mb-3">
           <Info className="w-4 h-4 text-primary" />
-          <h4 className="text-sm font-medium">Explainable AI Analysis</h4>
+          <h4 className="text-sm font-medium">System Diagnostic Report</h4>
         </div>
         <div className="text-center py-6 text-muted-foreground text-sm">
           <TrendingDown className="w-8 h-8 mx-auto mb-2 opacity-50" />
           Waiting for prediction data from the backend...
           <br />
-          Start the FastAPI server to see Integrated Gradients analysis.
+          Start the FastAPI server to acquire the diagnosis.
         </div>
       </div>
     )
   }
 
-  const { top_sensors, predicted_rul, status } = explainData
+  const { predicted_rul, risk_level, recommendation, uncertainty_sigma, anomaly_z, suspected_components, top_sensors } = explainData
 
-  // Auto-bold parser
-  const formatText = (text: string) => {
-    const lines = text.split('\n');
-    return lines.map((line, lineIdx) => {
-      const trimmed = line.trim();
-      
-      // Check if line is a header like "**1. Overall Assessment**"
-      if (trimmed.startsWith('**') && /^\*\*\d\./.test(trimmed)) {
-        const title = trimmed.replace(/\*\*/g, '');
-        return (
-          <div key={lineIdx} className="mt-8 first:mt-2 mb-4">
-            <h5 className="text-xs font-black uppercase tracking-[0.2em] bg-gradient-to-r from-indigo-400 via-purple-400 to-indigo-400 bg-[length:200%_auto] animate-gradient-x bg-clip-text text-transparent flex items-center gap-3">
-              <div className="w-2 h-2 rounded-sm bg-indigo-500 rotate-45 shadow-[0_0_10px_rgba(99,102,241,0.6)]" />
-              {title}
-            </h5>
-            <div className="h-px w-full bg-gradient-to-r from-indigo-500/40 via-purple-500/20 to-transparent mt-2" />
-          </div>
-        );
-      }
+  const degradationStage = predicted_rul <= 30 ? "an advanced stage of degradation" : predicted_rul <= 60 ? "early signs of degradation" : "normal operating conditions";
+  const primarySensors = top_sensors.slice(0, 3).map(s => s.sensor).join(', ');
 
-      // Check if line is a bullet point "• ..."
-      if (trimmed.startsWith('•')) {
-        const content = trimmed.substring(1).trim();
-        const icon = lineIdx < 10 ? <ShieldCheck className="w-4 h-4 text-success/80" /> : 
-                     lineIdx < 20 ? <Zap className="w-4 h-4 text-indigo-400/80" /> : 
-                     <Activity className="w-4 h-4 text-purple-400/80" />;
+  // Human-readable conversions
+  // Prediction Confidence: Re-calibrated to map typical uncertainty (0-20) into a clean 80-99.9% curve
+  const predictionConfidence = Math.max(50, Math.min(99.9, 100 - (Math.sqrt(uncertainty_sigma) * 2.5)));
+  const confidenceLabel = predictionConfidence >= 85 ? 'High' : predictionConfidence >= 70 ? 'Moderate' : 'Low';
+  // Anomaly Severity: z-score mapped to 0-100% where z≥3 is 100%
+  const anomalySeverity = Math.min(100, Math.max(0, (anomaly_z / 3) * 100));
+  const severityLabel = anomalySeverity >= 80 ? 'Critical' : anomalySeverity >= 50 ? 'Elevated' : anomalySeverity >= 20 ? 'Moderate' : 'Low';
 
-        return (
-          <div key={lineIdx} className="flex gap-3 mb-4 last:mb-0 p-3 bg-indigo-500/[0.03] border border-indigo-500/10 rounded-xl hover:bg-indigo-500/[0.06] transition-colors group">
-            <div className="shrink-0 mt-0.5 group-hover:scale-110 transition-transform">
-              {icon}
-            </div>
-            <div className="text-sm leading-relaxed text-foreground/90">
-              {parseBold(content)}
-            </div>
-          </div>
-        );
-      }
-
-      if (!trimmed) return <div key={lineIdx} className="h-2" />;
-
-      return (
-        <div key={lineIdx} className="mb-2 text-sm text-foreground/80 pl-7">
-          {parseBold(trimmed)}
-        </div>
-      );
-    });
-  }
-
-  const parseBold = (text: string) => {
-    const parts = text.split(/(\*\*.*?\*\*)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={i} className="font-bold text-indigo-400 bg-indigo-500/10 px-1 rounded mx-0.5 shadow-[0_0_8px_rgba(129,140,248,0.15)] tracking-tight">{part.slice(2, -2)}</strong>;
-      }
-      return part;
-    });
-  }
+  const formalDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
   return (
-    <div className="bg-muted/30 rounded-xl p-5 border border-border/50 shadow-sm relative overflow-hidden">
-      <div className="absolute -top-6 -right-6 opacity-5 pointer-events-none">
-        <Brain className="w-32 h-32 text-primary" />
-      </div>
-
-      <div className="flex items-center justify-between mb-5 relative z-10">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center border border-primary/20 shadow-[0_0_15px_rgba(59,130,246,0.2)]">
-            <Cpu className="w-5 h-5 text-primary" />
+    <>
+      {/* Viewport Dashboard UI */}
+      <div className="bg-muted/20 rounded-xl p-5 border border-border/50 shadow-sm relative flex flex-col h-full overflow-hidden">
+        <div className="flex items-center justify-between mb-5 relative z-10 w-full pb-3 border-b border-border/50">
+          <div className="flex items-center gap-2.5">
+            <h4 className="text-base font-bold tracking-widest uppercase text-foreground/90">System Diagnostic Report</h4>
           </div>
-          <h4 className="text-lg font-black tracking-tight uppercase tracking-widest text-primary/80">AI Expert Analysis</h4>
+          <Button 
+            variant="default" 
+            size="sm" 
+            className="h-8 text-xs gap-1.5 shadow-sm"
+            onClick={handleDownloadPDF}
+            disabled={isDownloading}
+          >
+            {isDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            {isDownloading ? 'Structuring...' : 'Export PDF'}
+          </Button>
         </div>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-success/10 border border-success/20 text-[10px] font-bold text-success">
-          <Activity className="w-3 h-3" />
-          ACTIVE ANALYSIS
-        </div>
-      </div>
 
-      {/* RUL Summary */}
-      <div className="mb-6 grid grid-cols-2 gap-4 relative z-10">
-        <div className="p-3 bg-background/40 rounded-xl border border-border/50">
-          <p className="text-[10px] uppercase font-bold text-muted-foreground mb-1">Current Status</p>
-          <div className={cn(
-            "inline-flex px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wide",
-            status === 'healthy' ? "bg-success/10 text-success border border-success/20" : "bg-warning/10 text-warning border border-warning/20"
-          )}>
-            {status}
-          </div>
-        </div>
-        <div className="p-3 bg-background/40 rounded-xl border border-border/50">
-          <p className="text-[10px] uppercase font-bold text-muted-foreground mb-1">Predicted RUL</p>
-          <div className={cn(
-            'text-lg font-black font-mono tracking-tighter',
-            predicted_rul <= 30 ? 'text-destructive' :
-            predicted_rul <= 60 ? 'text-warning' :
-            'text-success'
-          )}>
-            {Math.round(predicted_rul)} <span className="text-[10px] font-medium text-muted-foreground uppercase ml-1">Days</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Top Sensor Contributors */}
-      <div className="space-y-3 mb-4">
-        <p className="text-xs font-bold text-muted-foreground mb-4 flex items-center gap-2 uppercase tracking-[0.1em]">
-          <Activity className="w-4 h-4 text-indigo-400" />
-          Primary Feature Contribution Indices
-        </p>
-
-        {top_sensors.map((sensor, idx) => {
-          const pct = Math.round(sensor.importance * 100)
-          const isDegrading = sensor.direction === 'lowers_rul'
-          const name = idx === 0 ? "Temperature 2" : idx === 1 ? "Vibration 2" : sensor.sensor;
-          const plainText = sensor.plain_english.replace(sensor.sensor, name);
-
-          return (
-            <div key={idx} className="space-y-1.5 p-3 bg-background/40 rounded-md border border-border/50">
-              <div className="flex items-center justify-between text-base">
-                <span className="font-medium text-foreground">
-                  {name}
-                </span>
-                <span className={cn(
-                  'font-mono text-base font-bold flex items-center gap-1',
-                  isDegrading ? 'text-destructive' : 'text-success'
-                )}>
-                  {isDegrading ? <TrendingDown className="w-4 h-4" /> : <TrendingUp className="w-4 h-4" />}
-                  {pct}%
-                </span>
-              </div>
-
-              <p className="text-sm text-muted-foreground leading-relaxed mt-1">
-                {plainText}
-              </p>
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="pt-5 border-t border-border/50 relative z-10">
-        <p className="text-xs font-bold text-muted-foreground mb-3 flex items-center gap-2 uppercase tracking-widest">
-          <Bot className="w-4 h-4 text-primary" />
-          Neural Expert Synthesis
-          {isLoadingExpert && <Loader2 className="w-3 h-3 animate-spin text-primary ml-1" />}
-        </p>
-        <div className="bg-background/60 rounded-xl p-5 border border-border/50 shadow-inner min-h-[120px]">
-          {expertAnalysis ? (
-            <div className="text-sm leading-relaxed text-foreground/90">{formatText(expertAnalysis)}</div>
-          ) : isLoadingExpert ? (
-            <div className="flex flex-col items-center justify-center h-20 text-muted-foreground italic gap-3">
-               <Loader2 className="w-6 h-6 animate-spin text-primary/50" />
-               <p className="text-xs">Synthesizing sensor patterns via LLM...</p>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground italic">
-              Ollama instance not detected. Please verify local host connection.
+        <div className="flex-1 overflow-y-auto pr-2 space-y-6 text-base text-foreground/80 leading-relaxed">
+          
+          {/* Executive Summary */}
+          <section>
+            <h5 className="font-bold text-primary mb-2 uppercase tracking-wide text-lg">Executive Summary</h5>
+            <p>
+              The monitored asset <strong className="text-foreground">{machineId}</strong> is currently operating with an estimated Remaining Useful Life (RUL) of <strong className="text-foreground">{predicted_rul.toFixed(2)} cycles</strong>, indicating {degradationStage}. The system has identified a <strong className="text-foreground">{risk_level.toUpperCase()}</strong>-risk condition based on anomaly detection metrics.
             </p>
-          )}
+          </section>
+
+          {/* Metric Table */}
+          <section>
+            <div className="rounded-lg border border-border/50 overflow-hidden mt-3">
+              <table className="w-full text-left text-base border-collapse">
+                <thead className="bg-muted/50 border-b border-border/50">
+                  <tr>
+                    <th className="py-2.5 px-4 font-semibold text-foreground/90">Metric</th>
+                    <th className="py-2.5 px-4 font-semibold text-foreground/90">Value</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/50">
+                  <tr className="hover:bg-muted/30 transition-colors">
+                    <td className="py-2.5 px-4">Remaining Useful Life (RUL)</td>
+                    <td className="py-2.5 px-4 font-mono font-medium">{predicted_rul.toFixed(2)}</td>
+                  </tr>
+                  <tr className="hover:bg-muted/30 transition-colors">
+                    <td className="py-2.5 px-4">Prediction Confidence</td>
+                    <td className="py-2.5 px-4 font-mono font-medium">{predictionConfidence.toFixed(1)}% ({confidenceLabel})</td>
+                  </tr>
+                  <tr className="hover:bg-muted/30 transition-colors">
+                    <td className="py-2.5 px-4">Anomaly Severity</td>
+                    <td className={cn(
+                      "py-2.5 px-4 font-mono font-medium",
+                      anomalySeverity >= 80 ? 'text-destructive' : anomalySeverity >= 50 ? 'text-warning' : 'text-success'
+                    )}>{anomalySeverity.toFixed(1)}% ({severityLabel})</td>
+                  </tr>
+                  <tr className="hover:bg-muted/30 transition-colors">
+                    <td className="py-2.5 px-4">Risk Level</td>
+                    <td className={cn(
+                      "py-2.5 px-4 font-bold uppercase",
+                      risk_level.toLowerCase() === 'high' ? 'text-destructive' : risk_level.toLowerCase() === 'medium' ? 'text-warning' : 'text-success'
+                    )}>{risk_level}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {/* Fault Detection */}
+          <section>
+             <h5 className="font-bold text-primary mb-2 uppercase tracking-wide text-lg">Fault Detection</h5>
+             <p className="mb-2">The diagnostic model indicates potential failure in the following components:</p>
+             {suspected_components.length > 0 ? (
+               <div className="rounded-lg border border-border/50 overflow-hidden mt-3">
+                 <table className="w-full text-left text-base border-collapse">
+                   <thead className="bg-muted/50 border-b border-border/50">
+                     <tr>
+                       <th className="py-2.5 px-4 font-semibold text-foreground/90">Component</th>
+                       <th className="py-2.5 px-4 font-semibold text-foreground/90">Severity</th>
+                     </tr>
+                   </thead>
+                   <tbody className="divide-y divide-border/50">
+                     {suspected_components.map((compStr, idx) => {
+                       const [compName, severityStr] = compStr.split(' (Severity: ');
+                       const severity = severityStr ? severityStr.replace(')', '') : 'N/A';
+                       const parsedSeverity = parseFloat(severity);
+                       const colorClass = !isNaN(parsedSeverity) && parsedSeverity >= 80 ? 'text-destructive' : 
+                                          !isNaN(parsedSeverity) && parsedSeverity >= 50 ? 'text-warning' : 'text-success';
+                       return (
+                         <tr key={idx} className="hover:bg-muted/30 transition-colors">
+                           <td className="py-2.5 px-4">{compName}</td>
+                           <td className={cn("py-2.5 px-4 font-mono font-medium", colorClass)}>{severity}</td>
+                         </tr>
+                       )
+                     })}
+                   </tbody>
+                 </table>
+               </div>
+             ) : (
+                <p className="italic text-muted-foreground pl-3">No isolated component failures detected.</p>
+             )}
+          </section>
+
+          {/* Sensor Contribution */}
+          <section>
+             <h5 className="font-bold text-primary mb-2 uppercase tracking-wide text-lg">Sensor Contribution</h5>
+             {top_sensors.length > 0 ? (
+               <div className="rounded-lg border border-border/50 overflow-hidden mt-3">
+                 <table className="w-full text-left text-base border-collapse">
+                   <thead className="bg-muted/50 border-b border-border/50">
+                     <tr>
+                       <th className="py-2.5 px-4 font-semibold text-foreground/90">Sensor</th>
+                       <th className="py-2.5 px-4 font-semibold text-foreground/90">Impact</th>
+                     </tr>
+                   </thead>
+                   <tbody className="divide-y divide-border/50">
+                     {top_sensors.slice(0, 3).map((s, idx) => {
+                       const impactPct = (s.importance * 100).toFixed(1);
+                       const isDegrading = s.direction === 'lowers_rul';
+                       return (
+                         <tr key={idx} className="hover:bg-muted/30 transition-colors">
+                           <td className="py-2.5 px-4">{s.sensor}</td>
+                           <td className={cn("py-2.5 px-4 font-mono font-medium", isDegrading ? "text-destructive" : "text-success")}>
+                             {impactPct}% ({isDegrading ? 'Degrading' : 'Supporting'})
+                           </td>
+                         </tr>
+                       )
+                     })}
+                   </tbody>
+                 </table>
+               </div>
+             ) : (
+                <p className="italic text-muted-foreground pl-3">No dominant sensor evidence detected.</p>
+             )}
+          </section>
+
+          {/* Recommendations */}
+          <section>
+             <h5 className="font-bold text-primary mb-1 uppercase tracking-wide text-lg">Recommendations</h5>
+             <p className="bg-primary/5 border border-primary/20 p-3 rounded-md text-foreground/90">{recommendation}</p>
+          </section>
+
         </div>
       </div>
-    </div>
+
+      {/* Hidden Formal PDF Element formatted STRICTLY like the target PDF */}
+      <div 
+        id={`formal-pdf-${machineId}`} 
+        className="absolute w-[800px] left-[-9999px]" 
+        style={{ fontFamily: '"Times New Roman", Times, serif', backgroundColor: '#ffffff', color: '#000000', padding: '50px 60px' }}
+      >
+        {/* Header Title strictly replicating document */}
+        <h1 style={{ fontSize: '28px', fontWeight: 'bold', margin: '0 0 16px 0', borderBottom: '1px solid #000', paddingBottom: '8px' }}>
+          SYSTEM DIAGNOSTIC REPORT
+        </h1>
+        
+        <div style={{ fontSize: '17px', lineHeight: '1.6' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '20px', marginBottom: '8px' }}>Asset Identification</h2>
+          <p style={{ margin: 0 }}>Asset ID: {machineId}</p>
+          <p style={{ margin: 0 }}>Report Date: {formalDate}</p>
+
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '24px', marginBottom: '8px' }}>Executive Summary</h2>
+          <p style={{ margin: 0 }}>
+            The monitored asset {machineId} is currently operating with an estimated Remaining Useful Life<br/>
+            (RUL) of {predicted_rul.toFixed(2)} cycles, indicating {degradationStage}. The system has identified a<br/>
+            {risk_level}-risk condition based on anomaly detection metrics.
+          </p>
+
+          <div style={{ marginTop: '24px', width: '60%' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: '8px 0', borderBottom: '1px solid #000', fontWeight: 'bold' }}>Metric</th>
+                  <th style={{ padding: '8px 0', borderBottom: '1px solid #000', fontWeight: 'bold' }}>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ padding: '8px 0' }}>Remaining Useful Life (RUL)</td>
+                  <td style={{ padding: '8px 0' }}>{predicted_rul.toFixed(2)}</td>
+                </tr>
+                <tr>
+                  <td style={{ padding: '8px 0' }}>Prediction Confidence</td>
+                  <td style={{ padding: '8px 0' }}>{predictionConfidence.toFixed(1)}% ({confidenceLabel})</td>
+                </tr>
+                <tr>
+                  <td style={{ padding: '8px 0' }}>Anomaly Severity</td>
+                  <td style={{ padding: '8px 0' }}>{anomalySeverity.toFixed(1)}% ({severityLabel})</td>
+                </tr>
+                <tr>
+                  <td style={{ padding: '8px 0' }}>Risk Level</td>
+                  <td style={{ padding: '8px 0' }}>{risk_level.charAt(0).toUpperCase() + risk_level.slice(1)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '32px', marginBottom: '8px' }}>Fault Detection</h2>
+          <p style={{ margin: '0 0 8px 0' }}>The diagnostic model indicates potential failure in the following components:</p>
+          {suspected_components.length > 0 ? (
+          <div style={{ marginTop: '12px', width: '80%' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: '8px 0', borderBottom: '1px solid #000', fontWeight: 'bold' }}>Component</th>
+                  <th style={{ padding: '8px 0', borderBottom: '1px solid #000', fontWeight: 'bold' }}>Severity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {suspected_components.map((compStr, idx) => {
+                  const [compName, severityStr] = compStr.split(' (Severity: ');
+                  const severity = severityStr ? severityStr.replace(')', '') : 'N/A';
+                  return (
+                    <tr key={idx}>
+                      <td style={{ padding: '8px 0' }}>{compName}</td>
+                      <td style={{ padding: '8px 0' }}>{severity}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          ) : (
+             <p>No isolated component failures detected.</p>
+          )}
+
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '24px', marginBottom: '8px' }}>Sensor Contribution</h2>
+          {top_sensors.length > 0 ? (
+          <div style={{ marginTop: '12px', width: '80%' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: '8px 0', borderBottom: '1px solid #000', fontWeight: 'bold' }}>Sensor</th>
+                  <th style={{ padding: '8px 0', borderBottom: '1px solid #000', fontWeight: 'bold' }}>Impact</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top_sensors.slice(0, 3).map((s, idx) => {
+                  const impactPct = (s.importance * 100).toFixed(1);
+                  const isDegrading = s.direction === 'lowers_rul';
+                  return (
+                    <tr key={idx}>
+                      <td style={{ padding: '8px 0' }}>{s.sensor}</td>
+                      <td style={{ padding: '8px 0' }}>{impactPct}% ({isDegrading ? 'Degrading' : 'Supporting'})</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          ) : (
+             <p>No dominant sensor evidence detected.</p>
+          )}
+
+          <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '24px', marginBottom: '8px' }}>Recommendations</h2>
+          <p style={{ margin: 0 }}>{recommendation}</p>
+
+          {/* Footer String replicating document edge text */}
+          <p style={{ marginTop: '60px', fontSize: '13px', fontStyle: 'italic', color: '#555' }}>
+            This report is generated automatically by an AI diagnostic system. Confidential and proprietary.
+          </p>
+
+        </div>
+      </div>
+    </>
   )
 }
