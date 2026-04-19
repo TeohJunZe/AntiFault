@@ -21,6 +21,7 @@ import { MachineViewer3D } from '@/components/machine-viewer-3d'
 import { SensorCharts } from '@/components/sensor-charts'
 import { RULGraph } from '@/components/rul-graph'
 import { XAIPanel } from '@/components/xai-panel'
+import { FineTunePanel } from '@/components/fine-tune-panel'
 import { MaintenancePlanner } from '@/components/maintenance-planner'
 import { SimulationPanel } from '@/components/simulation-panel'
 import { TechnologySuggestions } from '@/components/technology-suggestions'
@@ -48,6 +49,7 @@ import {
   BarChart3,
   Play,
   Lightbulb,
+  BrainCircuit,
   X,
   Box,
   Clock
@@ -76,6 +78,7 @@ export default function DigitalTwinDashboard() {
   const [activeTab, setActiveTab] = useState('diagnostics')
   const [dashboardTab, setDashboardTab] = useState('fleet')
   const [statFilter, setStatFilter] = useState<'optimal' | 'impaired' | 'critical' | 'scheduled' | null>(null)
+  const [predictionRefreshToken, setPredictionRefreshToken] = useState(0)
 
   const [predictions, setPredictions] = useState<Record<string, { rul: number, status: Machine['status'] }>>({})
 
@@ -196,6 +199,26 @@ export default function DigitalTwinDashboard() {
     setMachines(prev => prev.map(m =>
       m.id === machineId ? { ...m, nextScheduledMaintenance: date } : m
     ))
+  }, [])
+
+  const handleFineTuneComplete = useCallback((machineId: string) => {
+    const clearStoredEntry = (storageKey: string) => {
+      try {
+        const raw = localStorage.getItem(storageKey)
+        if (!raw) return
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') {
+          delete parsed[machineId]
+          localStorage.setItem(storageKey, JSON.stringify(parsed))
+        }
+      } catch { }
+    }
+
+    clearStoredEntry('enginePredictions')
+    clearStoredEntry('engineExplainability')
+    clearStoredEntry('engineChangepoints')
+    setPredictionRefreshToken(token => token + 1)
+    window.dispatchEvent(new Event('predictionsUpdated'))
   }, [])
 
   // Alert → Maintenance Tab navigation
@@ -648,6 +671,7 @@ export default function DigitalTwinDashboard() {
                       machine={selectedMachine}
                       onComponentSelect={setSelectedComponent}
                       selectedComponent={selectedComponent}
+                      refreshToken={predictionRefreshToken}
                     />
                   </CardContent>
                 </Card>
@@ -725,13 +749,20 @@ export default function DigitalTwinDashboard() {
 
               {/* Tabbed Content */}
               <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList className="grid grid-cols-4 w-full max-w-[600px]">
+                <TabsList className="grid grid-cols-5 w-full max-w-[760px]">
                   <TabsTrigger 
                     value="diagnostics" 
                     className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary"
                   >
                     <Activity className="w-4 h-4" />
                     <span className="hidden sm:inline">Diagnostics</span>
+                  </TabsTrigger>
+                  <TabsTrigger 
+                    value="fine-tune" 
+                    className="gap-2 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300"
+                  >
+                    <BrainCircuit className="w-4 h-4" />
+                    <span className="hidden sm:inline">Fine Tune</span>
                   </TabsTrigger>
                   <TabsTrigger 
                     value="maintenance" 
@@ -784,6 +815,14 @@ export default function DigitalTwinDashboard() {
                       </CardContent>
                     </Card>
                   </div>
+                </TabsContent>
+
+                <TabsContent value="fine-tune" className="mt-6">
+                  <FineTunePanel
+                    machineId={selectedMachine.id}
+                    machineName={selectedMachine.name}
+                    onTuned={handleFineTuneComplete}
+                  />
                 </TabsContent>
 
                 <TabsContent value="maintenance" className="mt-6">

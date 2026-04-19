@@ -17,6 +17,12 @@ For details on the predictive analysis model that powers our Remaining Useful Li
 - **GitHub Repository:** [Predictive-Maintainance-RUL-Prediction-Model](https://github.com/yongjeen2409/Predictive-Maintainance-RUL-Prediction-Model.git)
 - **Streamlit App Demo:** [View Model Result Here](https://predictive-maintainance-rul-prediction-model-sorite-gang.streamlit.app/)
 
+### Machine-Specific Fine-Tuning
+
+The backend now supports machine-specific fine-tuning overlays. Fine-tuning does not overwrite `backend/deploy_bundle.pt`; instead, accepted runs save a separate machine-scoped `.pt` overlay under `backend/machine_models/<machine_id>/`.
+
+The current deployment bundle uses adapter-style transfer learning. Stage 1 primarily tunes the adapter and prediction head layers first, then only unfreezes a limited late-stage slice if validation stalls. This keeps the base fleet model stable while allowing per-machine customization.
+
 ## Setup Instructions
 
 Follow these step-by-step instructions to get the system up and running:

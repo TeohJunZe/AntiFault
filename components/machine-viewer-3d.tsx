@@ -36,6 +36,7 @@ interface MachineViewer3DProps {
   onAddMachine?: (m: Machine) => void
   onUpdateMachinePosition?: (id: string, location: { x: number; y: number }) => void
   onRemoveMachine?: (id: string) => void
+  refreshToken?: number
 }
 
 export function MachineViewer3D({ 
@@ -50,6 +51,7 @@ export function MachineViewer3D({
   onAddMachine,
   onUpdateMachinePosition,
   onRemoveMachine,
+  refreshToken = 0,
 }: MachineViewer3DProps) {
   const [isExploded, setIsExploded] = useState(false)
   const [predictions, setPredictions] = useState<Record<string, {rul: number, status: Machine['status']}>>({})
@@ -68,7 +70,7 @@ export function MachineViewer3D({
       
       try {
         const cached = localStorage.getItem('enginePredictions')
-        if (cached) {
+        if (cached && refreshToken === 0) {
           const parsed = JSON.parse(cached)
           const allCached = machinesToProcess.every(m => parsed[m.id] !== undefined)
           if (allCached) {
@@ -175,7 +177,7 @@ export function MachineViewer3D({
       }
     }
     fetchPredictions()
-  }, [isFleetView, machines, machine])
+  }, [isFleetView, machines, machine, refreshToken])
 
   const handleAddMachine = () => {
     if (!newName.trim() || !onAddMachine) return

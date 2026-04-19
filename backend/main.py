@@ -1,14 +1,22 @@
-import os
+import io
+import json
 import math
+import os
+import re
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-import pandas as pd
-import numpy as np
-from copy import deepcopy
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+
+from fine_tune_utils import evaluate_model_ensemble, fine_tune_model, prepare_fine_tune_bundle
 
 # ==========================================
 # 1. CONSTANTS & CONFIGURATION
@@ -274,11 +282,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-bundle_data:       Optional[dict] = None
-ensemble_models:   list           = []
-regime_kmeans      = None           # KMeans for default dataset (FD001)
-regime_scalers:    dict           = {}  # {regime_id: StandardScaler}
-global_scaler      = None           # Global StandardScaler for sensor columns
+CURRENT_DIR = Path(__file__).resolve().parent
+BASE_BUNDLE_PATH = CURRENT_DIR / "deploy_bundle.pt"
+MACHINE_MODELS_DIR = CURRENT_DIR / "machine_models"
+
+bundle_data: Optional[dict] = None
+ensemble_models: List[nn.Module] = []
+overlay_models_cache: Dict[str, List[nn.Module]] = {}
+overlay_metadata_cache: Dict[str, Dict[str, Any]] = {}
+regime_kmeans = None
+regime_scalers: dict = {}
+global_scaler = None
+TRAINING_POLICY: Dict[str, Any] = {}
+TRANSFER_POLICY: Dict[str, Any] = {}
+CRITICAL_RUL_CUTOFF = 60
+VERY_LOW_RUL_THRESHOLD = 30
+ADAPTER_HEAD_PARAMETER_SHARE_PCT = 0.0
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sanitize_machine_id(machine_id: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", machine_id.strip())
+    return sanitized or "unknown-machine"
+
+
+def _machine_overlay_dir(machine_id: str) -> Path:
+    return MACHINE_MODELS_DIR / _sanitize_machine_id(machine_id)
+
+
+def _machine_overlay_path(machine_id: str) -> Path:
+    return _machine_overlay_dir(machine_id) / "model_overlay.pt"
+
+
+def _machine_metadata_path(machine_id: str) -> Path:
+    return _machine_overlay_dir(machine_id) / "metadata.json"
+
+
+def _machine_upload_path(machine_id: str) -> Path:
+    return _machine_overlay_dir(machine_id) / "latest_upload.csv"
 
 
 def load_deploy_bundle():
@@ -288,14 +332,16 @@ def load_deploy_bundle():
     global REGISTRY_SENSOR_ORDER, REGISTRY_SENSOR_IDS
     global COMPONENT_MAP, CALIBRATION_STATS, RISK_THRESHOLDS
     global RUL_CAP, SEQ_LEN, D_MODEL, N_HEAD, NUM_LAYERS, DROPOUT, HEALTH_DIM
+    global TRAINING_POLICY, TRANSFER_POLICY
+    global CRITICAL_RUL_CUTOFF, VERY_LOW_RUL_THRESHOLD, ADAPTER_HEAD_PARAMETER_SHARE_PCT
 
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path  = os.path.join(current_dir, 'deploy_bundle.pt')
+    MACHINE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    ensemble_models = []
 
-    if not os.path.exists(model_path):
-        raise RuntimeError(f"{model_path} not found! Place it in the backend directory.")
+    if not BASE_BUNDLE_PATH.exists():
+        raise RuntimeError(f"{BASE_BUNDLE_PATH} not found! Place it in the backend directory.")
 
-    bundle = torch.load(model_path, map_location=device, weights_only=False)
+    bundle = torch.load(BASE_BUNDLE_PATH, map_location=device, weights_only=False)
     bundle_data = bundle
 
     # ── Extract hyperparameters ────────────────────────────────────────
@@ -307,6 +353,8 @@ def load_deploy_bundle():
     NUM_LAYERS = hp.get('NUM_LAYERS', 4)
     DROPOUT    = hp.get('DROPOUT', 0.15)
     HEALTH_DIM = 96  # derived from health_embedding.0.weight shape
+    CRITICAL_RUL_CUTOFF = int(hp.get('CRITICAL_RUL_CUTOFF', 60))
+    VERY_LOW_RUL_THRESHOLD = int(hp.get('VERY_LOW_RUL_THRESHOLD', 30))
 
     # ── Sensor registry ────────────────────────────────────────────────
     REGISTRY_SENSOR_ORDER = hp['REGISTRY_SENSOR_ORDER']
@@ -327,6 +375,8 @@ def load_deploy_bundle():
     # ── Calibration & risk ─────────────────────────────────────────────
     CALIBRATION_STATS = bundle.get('calibration')
     RISK_THRESHOLDS   = bundle.get('risk_thresholds', {})
+    TRAINING_POLICY = bundle.get('training_policy', {})
+    TRANSFER_POLICY = bundle.get('transfer_policy', {})
 
     # ── Preprocessing objects (default to FD002 to match mock data) ────────
     default_dataset = 'FD002'
@@ -356,6 +406,16 @@ def load_deploy_bundle():
         model.eval()
         ensemble_models.append(model)
 
+    if ensemble_artifact['members']:
+        sample_state_dict = ensemble_artifact['members'][0]['state_dict']
+        total_params = sum(tensor.numel() for tensor in sample_state_dict.values())
+        adapter_head_params = sum(
+            tensor.numel()
+            for key, tensor in sample_state_dict.items()
+            if key.startswith('adapter.') or key.startswith('rul_head.')
+        )
+        ADAPTER_HEAD_PARAMETER_SHARE_PCT = round((adapter_head_params / max(total_params, 1)) * 100, 4)
+
     print(f"[OK] API Initialized | {len(ensemble_models)} ensemble models | "
           f"{max_sensors} sensors | SEQ_LEN={SEQ_LEN} | device={device}")
 
@@ -363,6 +423,241 @@ def load_deploy_bundle():
 @app.on_event("startup")
 async def startup_event():
     load_deploy_bundle()
+
+
+def _build_model_from_state_dict(state_dict: Dict[str, torch.Tensor]) -> nn.Module:
+    model = SensorTokenRULModel(
+        max_sensors=len(REGISTRY_SENSOR_ORDER),
+        seq_len=SEQ_LEN,
+        d_model=D_MODEL,
+        nhead=N_HEAD,
+        num_layers=NUM_LAYERS,
+        dropout=DROPOUT,
+        health_dim=HEALTH_DIM,
+    ).to(device)
+    model.load_state_dict(state_dict, strict=True)
+    model.eval()
+    return model
+
+
+def _invalidate_machine_overlay_cache(machine_id: str) -> None:
+    overlay_models_cache.pop(machine_id, None)
+    overlay_metadata_cache.pop(machine_id, None)
+
+
+def _load_machine_overlay_metadata(machine_id: str) -> Optional[Dict[str, Any]]:
+    if machine_id in overlay_metadata_cache:
+        return overlay_metadata_cache[machine_id]
+
+    metadata_path = _machine_metadata_path(machine_id)
+    if not metadata_path.exists():
+        return None
+
+    with metadata_path.open("r", encoding="utf-8") as metadata_file:
+        metadata = json.load(metadata_file)
+
+    overlay_metadata_cache[machine_id] = metadata
+    return metadata
+
+
+def _load_machine_overlay_models(machine_id: str) -> Optional[List[nn.Module]]:
+    if machine_id in overlay_models_cache:
+        return overlay_models_cache[machine_id]
+
+    overlay_path = _machine_overlay_path(machine_id)
+    if not overlay_path.exists():
+        return None
+
+    payload = torch.load(overlay_path, map_location=device, weights_only=False)
+    models: List[nn.Module] = []
+    for member in payload.get("members", []):
+        models.append(_build_model_from_state_dict(member["state_dict"]))
+
+    if not models:
+        return None
+
+    overlay_models_cache[machine_id] = models
+    return models
+
+
+def _resolve_models_for_engine(engine_id: str) -> List[nn.Module]:
+    overlay_models = _load_machine_overlay_models(engine_id)
+    return overlay_models or ensemble_models
+
+
+def _build_fine_tune_config() -> Dict[str, Any]:
+    return {
+        "registry_sensor_order": REGISTRY_SENSOR_ORDER,
+        "registry_sensor_ids": REGISTRY_SENSOR_IDS,
+        "op_cols": OP_COLS,
+        "coverage_warn_threshold": float(
+            TRANSFER_POLICY.get("thresholds", {}).get("missing_sensor_warn_ratio", 0.2)
+        ),
+        "coverage_reject_threshold": float(
+            TRANSFER_POLICY.get("thresholds", {}).get("missing_sensor_reject_ratio", 0.4)
+        ),
+        "test_ratio": 0.25,
+        "val_ratio": 0.20,
+        "random_seed": 42,
+        "seq_len": SEQ_LEN,
+        "batch_size": int(TRANSFER_POLICY.get("fine_tune_batch_size", 96)),
+        "stride_high_rul": int(TRAINING_POLICY.get("STRIDE_HIGH_RUL", 4)),
+        "stride_mid_rul": int(TRAINING_POLICY.get("STRIDE_MID_RUL", 2)),
+        "stride_low_rul": int(TRAINING_POLICY.get("STRIDE_LOW_RUL", 1)),
+        "critical_rul_cutoff": int(CRITICAL_RUL_CUTOFF),
+        "very_low_rul_threshold": int(VERY_LOW_RUL_THRESHOLD),
+        "weight_high_rul": float(TRAINING_POLICY.get("WEIGHT_HIGH_RUL", 1.0)),
+        "weight_mid_rul": float(TRAINING_POLICY.get("WEIGHT_MID_RUL", 3.0)),
+        "weight_low_rul": float(TRAINING_POLICY.get("WEIGHT_LOW_RUL", 5.0)),
+        "mid_rul_threshold": float(CRITICAL_RUL_CUTOFF),
+        "low_rul_threshold": float(VERY_LOW_RUL_THRESHOLD),
+        "mid_rul_weight": float(TRAINING_POLICY.get("MID_RUL_WEIGHT", 1.5)),
+        "low_rul_weight": float(TRAINING_POLICY.get("LOW_RUL_WEIGHT", 3.0)),
+        "critical_over_weight": float(TRAINING_POLICY.get("CRITICAL_ASYMMETRIC_OVER_WEIGHT", 4.0)),
+        "critical_under_weight": float(TRAINING_POLICY.get("CRITICAL_ASYMMETRIC_UNDER_WEIGHT", 1.0)),
+        "recon_weight": float(bundle_data.get("model_hyperparameters", {}).get("RECON_WEIGHT", 0.1)),
+        "fine_tune_lr": 5e-4,
+        "stage2_lr": float(TRANSFER_POLICY.get("stage2_lr", 1e-4)),
+        "stage2_trigger_patience": int(TRANSFER_POLICY.get("stage2_trigger_patience", 3)),
+        "max_epochs": int(TRAINING_POLICY.get("MAX_EPOCHS", 32)),
+        "early_stop_patience": int(TRAINING_POLICY.get("EARLY_STOP_PATIENCE", 6)),
+        "min_improvement": float(TRAINING_POLICY.get("EARLY_STOP_MIN_DELTA", 0.1)),
+        "weight_decay": 1e-4,
+        "grad_clip": 1.0,
+    }
+
+
+def _calculate_metric_improvement(
+    before_metrics: Dict[str, float],
+    after_metrics: Dict[str, float],
+) -> Dict[str, float]:
+    return {
+        "rmse_delta": round(after_metrics["rmse"] - before_metrics["rmse"], 4),
+        "mae_delta": round(after_metrics["mae"] - before_metrics["mae"], 4),
+        "accuracy_within_20_delta": round(
+            after_metrics["accuracy_within_20"] - before_metrics["accuracy_within_20"], 4
+        ),
+    }
+
+
+def _save_machine_overlay(
+    machine_id: str,
+    tuned_models: List[nn.Module],
+    metadata: Dict[str, Any],
+    csv_bytes: bytes,
+) -> str:
+    machine_dir = _machine_overlay_dir(machine_id)
+    machine_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact_id = metadata["artifact_id"]
+    overlay_payload = {
+        "artifact_id": artifact_id,
+        "machine_id": machine_id,
+        "created_utc": metadata["trained_at"],
+        "base_bundle_created_utc": bundle_data.get("created_utc"),
+        "members": [
+            {
+                "index": index,
+                "state_dict": {key: value.detach().cpu() for key, value in model.state_dict().items()},
+            }
+            for index, model in enumerate(tuned_models)
+        ],
+    }
+
+    torch.save(overlay_payload, _machine_overlay_path(machine_id))
+    with _machine_metadata_path(machine_id).open("w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, indent=2)
+    _machine_upload_path(machine_id).write_bytes(csv_bytes)
+    _invalidate_machine_overlay_cache(machine_id)
+    overlay_metadata_cache[machine_id] = metadata
+    return artifact_id
+
+
+def fine_tune_machine_from_dataframe(
+    machine_id: str,
+    raw_df: pd.DataFrame,
+    csv_bytes: bytes,
+) -> Dict[str, Any]:
+    config = _build_fine_tune_config()
+    bundle = prepare_fine_tune_bundle(raw_df=raw_df, config=config, preprocess_fn=_apply_regime_scaling)
+    coverage = bundle["coverage"]
+
+    if coverage["coverage_status"] == "reject":
+        raise HTTPException(
+            400,
+            (
+                f"Uploaded CSV is missing too many registered sensors "
+                f"({coverage['missing_sensor_ratio']:.2%} > {coverage['reject_threshold']:.0%})."
+            ),
+        )
+
+    test_loader = bundle["test_loader"]
+    before_pred, before_true, before_metrics = evaluate_model_ensemble(
+        ensemble_models, test_loader, device, RUL_CAP
+    )
+
+    tuned_models: List[nn.Module] = []
+    training_histories: List[List[Dict[str, Any]]] = []
+    for index, base_model in enumerate(ensemble_models):
+        tuned_model, history = fine_tune_model(
+            base_model=base_model,
+            train_loader=bundle["train_loader"],
+            val_loader=bundle["val_loader"],
+            device=device,
+            rul_cap=RUL_CAP,
+            config=config,
+            model_name=f"{machine_id}-member-{index}",
+        )
+        tuned_models.append(tuned_model)
+        training_histories.append(history)
+
+    after_pred, after_true, after_metrics = evaluate_model_ensemble(
+        tuned_models, test_loader, device, RUL_CAP
+    )
+    accepted = after_metrics["rmse"] <= before_metrics["rmse"]
+    trained_at = _utc_now_iso()
+    artifact_id = f"{_sanitize_machine_id(machine_id)}-{trained_at.replace(':', '').replace('.', '')}"
+
+    response = {
+        "machine_id": machine_id,
+        "accepted": accepted,
+        "has_custom_model": accepted,
+        "before_metrics": before_metrics,
+        "after_metrics": after_metrics,
+        "improvement": _calculate_metric_improvement(before_metrics, after_metrics),
+        "coverage": coverage,
+        "artifact_id": artifact_id if accepted else None,
+        "trained_at": trained_at,
+        "tuning_strategy": {
+            "base_bundle_modified": False,
+            "adapter_head_parameter_share_pct": ADAPTER_HEAD_PARAMETER_SHARE_PCT,
+            "stage1_blocks": ["adapter", "health_embedding", "rul_head"],
+            "stage2_blocks": ["temporal_attn", "conv3", "norm3", "transformer.layers[-1]"],
+        },
+        "evaluation_sample_count": int(len(before_true)),
+        "train_history": training_histories,
+        "baseline_preview": {
+            "true_rul": [round(float(value), 3) for value in before_true[:10]],
+            "before_pred": [round(float(value), 3) for value in before_pred[:10]],
+            "after_pred": [round(float(value), 3) for value in after_pred[:10]],
+        },
+    }
+
+    if accepted:
+        metadata = {
+            "machine_id": machine_id,
+            "has_custom_model": True,
+            "trained_at": trained_at,
+            "artifact_id": artifact_id,
+            "before_metrics": before_metrics,
+            "after_metrics": after_metrics,
+            "improvement": response["improvement"],
+            "coverage": coverage,
+            "tuning_strategy": response["tuning_strategy"],
+        }
+        _save_machine_overlay(machine_id, tuned_models, metadata, csv_bytes)
+
+    return response
 
 
 # ==========================================
@@ -593,13 +888,14 @@ async def predict_rul(request: InferenceRequest):
 
     # ── 3. Build token tensors ─────────────────────────────────────────
     batch = _build_token_tensors(df)
+    models = _resolve_models_for_engine(request.engine_id)
 
     # ── 4. Ensemble inference ──────────────────────────────────────────
     ensemble_preds, ensemble_vars, ensemble_anoms = [], [], []
     ensemble_attn = []
 
     with torch.no_grad():
-        for model in ensemble_models:
+        for model in models:
             pred_rul, log_var, reconstruction, info = model(
                 batch["sensor_ids"],
                 batch["sensor_values"],
@@ -628,7 +924,7 @@ async def predict_rul(request: InferenceRequest):
     attn_peak_cycle = int(np.argmax(mean_attn))
 
     # ── 5. Explainability ──────────────────────────────────────────────
-    explain_model = ensemble_models[0]
+    explain_model = models[0]
 
     # Reconstruction scores
     with torch.no_grad():
@@ -811,12 +1107,13 @@ async def detect_changepoint(request: InferenceRequest):
     batch_gap  = torch.tensor(np.array(all_gaps),  dtype=torch.float32, device=device)
     batch_qual = torch.tensor(np.array(all_qual),  dtype=torch.long,    device=device)
     batch_ops  = torch.tensor(np.array(all_ops),   dtype=torch.float32, device=device)
+    models = _resolve_models_for_engine(request.engine_id)
 
     ensemble_anomalies = np.zeros(num_flights)
     ensemble_ruls      = np.zeros(num_flights)
 
     with torch.no_grad():
-        for model in ensemble_models:
+        for model in models:
             pred_rul, _, recon, _ = model(
                 batch_ids, batch_vals, batch_mask, batch_gap, batch_qual, batch_ops
             )
@@ -824,8 +1121,8 @@ async def detect_changepoint(request: InferenceRequest):
             recon_err = ((recon - batch_vals) ** 2 * batch_mask).mean(dim=(1, 2)).cpu().numpy()
             ensemble_anomalies += recon_err
 
-    ensemble_ruls      /= len(ensemble_models)
-    ensemble_anomalies /= len(ensemble_models)
+    ensemble_ruls      /= len(models)
+    ensemble_anomalies /= len(models)
 
     baseline_anomaly  = np.mean(ensemble_anomalies[:10])
     anomaly_threshold = baseline_anomaly * 2.5
@@ -856,6 +1153,52 @@ async def detect_changepoint(request: InferenceRequest):
         "impaired_flight_cycle":  change_point_cycle if change_point_cycle != -1 else None,
         "transition_reason":      trigger_reason,
     }
+
+
+@app.get("/machines/{machine_id}/fine-tune-status")
+async def get_fine_tune_status(machine_id: str):
+    metadata = _load_machine_overlay_metadata(machine_id)
+    if not metadata:
+        return {
+            "machine_id": machine_id,
+            "has_custom_model": False,
+            "trained_at": None,
+            "before_metrics": None,
+            "after_metrics": None,
+            "artifact_id": None,
+        }
+
+    return {
+        "machine_id": machine_id,
+        "has_custom_model": bool(metadata.get("has_custom_model", False)),
+        "trained_at": metadata.get("trained_at"),
+        "before_metrics": metadata.get("before_metrics"),
+        "after_metrics": metadata.get("after_metrics"),
+        "artifact_id": metadata.get("artifact_id"),
+        "coverage": metadata.get("coverage"),
+        "tuning_strategy": metadata.get("tuning_strategy"),
+    }
+
+
+@app.post("/machines/{machine_id}/fine-tune")
+async def fine_tune_machine(machine_id: str, file: UploadFile = File(...)):
+    filename = file.filename or ""
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Only CSV uploads are supported for fine-tuning.")
+
+    csv_bytes = await file.read()
+    if not csv_bytes.strip():
+        raise HTTPException(400, "Uploaded CSV file is empty.")
+
+    try:
+        raw_df = pd.read_csv(io.BytesIO(csv_bytes))
+    except Exception as exc:  # pragma: no cover - parser errors are runtime dependent
+        raise HTTPException(400, f"Failed to parse CSV: {exc}") from exc
+
+    try:
+        return fine_tune_machine_from_dataframe(machine_id=machine_id, raw_df=raw_df, csv_bytes=csv_bytes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 # ==========================================
 # 9. ENTRYPOINT
