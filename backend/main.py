@@ -1,8 +1,10 @@
 import os
+import math
 import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
+from copy import deepcopy
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,18 +12,37 @@ from typing import List, Dict, Optional
 
 # ==========================================
 # 1. CONSTANTS & CONFIGURATION
+#    (defaults — overridden at startup from
+#     the deploy_bundle hyperparameters)
 # ==========================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-RUL_CAP    = 125
-SEQ_LEN    = 40
-D_MODEL    = 96
-N_HEAD     = 3
-NUM_LAYERS = 3
-DROPOUT    = 0.2
-HEALTH_DIM = 64
-IG_STEPS   = 30   # Integrated Gradients interpolation steps
 
-op_cols         = ['op_setting_1', 'op_setting_2', 'op_setting_3']
+RUL_CAP     = 125
+SEQ_LEN     = 60
+D_MODEL     = 128
+N_HEAD      = 4
+NUM_LAYERS  = 4
+DROPOUT     = 0.15
+HEALTH_DIM  = 96
+
+# These are populated from the bundle at startup
+REGISTRY_SENSOR_ORDER: List[str] = []
+REGISTRY_SENSOR_IDS:   Dict[str, int] = {}
+COMPONENT_MAP:         Dict[str, List[str]] = {}
+CALIBRATION_STATS:     Optional[dict] = None
+RISK_THRESHOLDS:       dict = {}
+
+# Operating-settings column names used by the bundle's preprocessing
+OP_COLS = ['setting_1', 'setting_2', 'setting_3']
+
+# Mapping from the API's external column names to the bundle's internal names
+OP_COLS_API_MAP = {
+    'op_setting_1': 'setting_1',
+    'op_setting_2': 'setting_2',
+    'op_setting_3': 'setting_3',
+}
+
+# All 21 sensor columns the API accepts in flight_history rows
 all_sensor_cols = [f'sensor_{i}' for i in range(1, 22)]
 
 # ==========================================
@@ -43,14 +64,200 @@ class InferenceResponse(BaseModel):
     confidence_margin: float
     anomaly_score:     float
     status:            str
-    # ── NEW explainability fields ──────────────────────────────────────
+    # ── explainability fields ──────────────────────────────────────────
     top_sensors:     List[SensorExplanation]  # always 2 entries
-    attn_peak_cycle: int   # which of the last 40 cycles the model focused on most
+    attn_peak_cycle: int   # which of the last SEQ_LEN cycles the model focused on most
 
 # ==========================================
-# 3. FASTAPI APP & MODEL LOADING
+# 3. MODEL ARCHITECTURE
+#    (SensorTokenRULModel from deploy_bundle)
 # ==========================================
-app = FastAPI(title="SOTA Predictive Maintenance API", version="2.0")
+
+class OnlineSensorNorm(nn.Module):
+    """Per-sensor running normalization (mean/std stored as buffers)."""
+    def __init__(self, max_sensors: int):
+        super().__init__()
+        self.register_buffer("running_mean", torch.zeros(max_sensors))
+        self.register_buffer("running_std", torch.ones(max_sensors))
+
+    def forward(self, sensor_values: torch.Tensor):
+        mean = self.running_mean.view(1, 1, -1)
+        std  = self.running_std.view(1, 1, -1)
+        return (sensor_values - mean) / std
+
+
+class MaskedGatedAggregator(nn.Module):
+    """Gated aggregation across the sensor dimension."""
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+
+    def forward(self, tokens: torch.Tensor, mask: torch.Tensor):
+        logits = self.gate(tokens).squeeze(-1)
+        logits = logits.masked_fill(mask <= 0, -1e4)
+        weights = torch.softmax(logits, dim=2)
+        aggregated = torch.sum(tokens * weights.unsqueeze(-1), dim=2)
+        return aggregated, weights
+
+
+class MachineAdapter(nn.Module):
+    """Bottleneck adapter for domain adaptation."""
+    def __init__(self, d_model: int = D_MODEL, bottleneck: int = 16):
+        super().__init__()
+        self.down = nn.Linear(d_model, bottleneck)
+        self.up   = nn.Linear(bottleneck, d_model)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        return self.norm(x + self.up(torch.relu(self.down(x))))
+
+
+class SensorTokenRULModel(nn.Module):
+    """
+    Sensor-token RUL prediction model.
+    Each sensor at each timestep is a separate token that gets embedded,
+    then aggregated across sensors, processed through conv + transformer,
+    and decoded to RUL + reconstruction.
+    """
+    def __init__(self, max_sensors: int, seq_len: int = SEQ_LEN,
+                 d_model: int = D_MODEL, nhead: int = N_HEAD,
+                 num_layers: int = NUM_LAYERS, dropout: float = DROPOUT,
+                 health_dim: int = HEALTH_DIM):
+        super().__init__()
+        self.max_sensors = max_sensors
+        self.seq_len = seq_len
+
+        # Online normalization layer (mean/std loaded from state_dict)
+        self.norm_layer = OnlineSensorNorm(max_sensors=max_sensors)
+
+        # Token embedding components
+        self.sensor_embed  = nn.Embedding(max_sensors + 1, 24)
+        self.value_proj    = nn.Linear(1, 24)
+        self.gap_proj      = nn.Linear(1, 8)
+        self.quality_embed = nn.Embedding(8, 8)
+        # Fuse: id_emb(24) + val_emb(24) + gap_emb(8) + qual_emb(8) + mask_feat(1) = 65
+        self.token_fusion  = nn.Linear(24 + 24 + 8 + 8 + 1, d_model)
+
+        # Sensor aggregation
+        self.sensor_agg = MaskedGatedAggregator(d_model)
+
+        # Operating-settings gating
+        self.op_proj = nn.Sequential(
+            nn.Linear(len(OP_COLS), d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
+        self.op_gate = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+            nn.Sigmoid(),
+        )
+
+        # Dilated Conv stack
+        self.conv1 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=1)
+        self.norm1 = nn.GroupNorm(1, d_model)
+        self.conv2 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=2, dilation=2)
+        self.norm2 = nn.GroupNorm(1, d_model)
+        self.conv3 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=4, dilation=4)
+        self.norm3 = nn.GroupNorm(1, d_model)
+        self.relu  = nn.ReLU()
+
+        # Positional encoding
+        pe = torch.zeros(seq_len, d_model)
+        position = torch.arange(0, seq_len, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pos_encoder", pe.unsqueeze(0))
+
+        # Transformer encoder
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4,
+            dropout=dropout, batch_first=True, norm_first=True
+        )
+        self.transformer = nn.TransformerEncoder(enc_layer, num_layers=num_layers, enable_nested_tensor=False)
+        self.adapter = MachineAdapter(d_model=d_model)
+
+        # Temporal attention pooling
+        self.temporal_attn = nn.Sequential(nn.Linear(d_model, 128), nn.GELU(), nn.Linear(128, 1))
+
+        # Health embedding + RUL head
+        self.health_embedding = nn.Sequential(nn.Linear(d_model, health_dim), nn.GELU(), nn.Dropout(dropout))
+        self.rul_head = nn.Linear(health_dim, 2)
+
+        # Reconstruction decoder (per-timestep → sensor values)
+        self.decoder = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, max_sensors),
+        )
+
+    def forward(self, sensor_ids, sensor_values, sensor_mask,
+                sensor_time_gap, sensor_quality, operating_settings=None):
+        # ── Token embedding ────────────────────────────────────────────
+        sensor_values_norm = self.norm_layer(sensor_values)
+
+        id_emb   = self.sensor_embed(sensor_ids)
+        val_emb  = self.value_proj(sensor_values_norm.unsqueeze(-1))
+        gap_emb  = self.gap_proj(sensor_time_gap.unsqueeze(-1))
+        qual_emb = self.quality_embed(sensor_quality.long().clamp(min=0, max=7))
+        mask_feat = sensor_mask.unsqueeze(-1)
+
+        tokens = torch.cat([id_emb, val_emb, gap_emb, qual_emb, mask_feat], dim=-1)
+        tokens = self.token_fusion(tokens)
+        tokens = tokens * sensor_mask.unsqueeze(-1)
+
+        # ── Sensor aggregation ─────────────────────────────────────────
+        x, sensor_weights = self.sensor_agg(tokens, sensor_mask)  # (B, T, D)
+
+        # ── Operating-settings gating (optional) ───────────────────────
+        if operating_settings is not None:
+            op_emb = self.op_proj(operating_settings)       # (B, T, D)
+            gate   = self.op_gate(torch.cat([x, op_emb], dim=-1))  # (B, T, D)
+            x      = x * gate + op_emb * (1 - gate)
+
+        # ── Dilated Conv ───────────────────────────────────────────────
+        x_in = x.permute(0, 2, 1)
+        res1 = self.relu(self.norm1(self.conv1(x_in)))
+        res2 = self.relu(self.norm2(self.conv2(res1)) + res1)
+        h    = self.relu(self.norm3(self.conv3(res2)) + res2)
+        h    = h.permute(0, 2, 1)
+
+        # ── Transformer + adapter ──────────────────────────────────────
+        h = h + self.pos_encoder[:, :h.shape[1], :]
+        h = self.transformer(h)
+        h = self.adapter(h)
+
+        # ── Temporal attention pooling ─────────────────────────────────
+        attn_scores  = self.temporal_attn(h).squeeze(-1)
+        attn_weights = torch.softmax(attn_scores, dim=1)   # (B, T)
+        context      = torch.sum(attn_weights.unsqueeze(-1) * h, dim=1)  # (B, D)
+
+        # ── RUL prediction ─────────────────────────────────────────────
+        health  = self.health_embedding(context)
+        out     = self.rul_head(health)
+        pred_rul = torch.relu(out[:, 0])
+        log_var  = out[:, 1]
+
+        # ── Reconstruction ─────────────────────────────────────────────
+        reconstruction = self.decoder(h)  # (B, T, max_sensors)
+
+        return pred_rul, log_var, reconstruction, {
+            "health": health,
+            "temporal_attn": attn_weights,
+            "temporal_hidden": h,
+        }
+
+
+# ==========================================
+# 4. FASTAPI APP & MODEL LOADING
+# ==========================================
+app = FastAPI(title="SOTA Predictive Maintenance API", version="3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,305 +267,393 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-pipeline_data:     Optional[dict] = None
+bundle_data:       Optional[dict] = None
 ensemble_models:   list           = []
-important_sensors: list           = []
-feature_cols:      list           = []
-sensor_map:        Dict[int, str] = {}  # feature_index → base sensor name, built at startup
+regime_kmeans      = None           # KMeans for default dataset (FD001)
+regime_scalers:    dict           = {}  # {regime_id: StandardScaler}
+global_scaler      = None           # Global StandardScaler for sensor columns
 
 
-def _build_sensor_map(feat_cols: list, sensors: list) -> Dict[int, str]:
-    """Map every feature column index back to its parent sensor name."""
-    mapping = {}
-    for i, col in enumerate(feat_cols):
-        for s in sensors:
-            if col == s or col.startswith(s + "_"):
-                mapping[i] = s
-                break
-    return mapping
-
-
-def load_production_core():
-    global pipeline_data, ensemble_models, important_sensors, feature_cols, sensor_map
+def load_deploy_bundle():
+    """Load the deploy_bundle.pt and initialise all runtime state."""
+    global bundle_data, ensemble_models
+    global regime_kmeans, regime_scalers, global_scaler
+    global REGISTRY_SENSOR_ORDER, REGISTRY_SENSOR_IDS
+    global COMPONENT_MAP, CALIBRATION_STATS, RISK_THRESHOLDS
+    global RUL_CAP, SEQ_LEN, D_MODEL, N_HEAD, NUM_LAYERS, DROPOUT, HEALTH_DIM
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path  = os.path.join(current_dir, 'production_core.pt')
+    model_path  = os.path.join(current_dir, 'deploy_bundle.pt')
 
     if not os.path.exists(model_path):
         raise RuntimeError(f"{model_path} not found! Place it in the backend directory.")
 
-    package           = torch.load(model_path, map_location=device, weights_only=False)
-    pipeline_data     = package['pipeline']
-    important_sensors = pipeline_data['sensors']
+    bundle = torch.load(model_path, map_location=device, weights_only=False)
+    bundle_data = bundle
 
-    feature_cols = (
-        important_sensors
-        + [f'{c}_diff'      for c in important_sensors]
-        + [f'{c}_mean_{w}'  for c in important_sensors for w in [5, 10, 20, 30]]
-        + [f'{c}_std_{w}'   for c in important_sensors for w in [5, 10, 20, 30]]
-        + [f'{c}_slope_{w}' for c in important_sensors for w in [10, 20]]
-    )
-    sensor_map = _build_sensor_map(feature_cols, important_sensors)
+    # ── Extract hyperparameters ────────────────────────────────────────
+    hp = bundle['model_hyperparameters']
+    RUL_CAP    = hp.get('RUL_CAP', 125)
+    SEQ_LEN    = hp.get('SEQ_LEN', 60)
+    D_MODEL    = hp.get('D_MODEL', 128)
+    N_HEAD     = hp.get('N_HEAD', 4)
+    NUM_LAYERS = hp.get('NUM_LAYERS', 4)
+    DROPOUT    = hp.get('DROPOUT', 0.15)
+    HEALTH_DIM = 96  # derived from health_embedding.0.weight shape
 
-    # ── Architecture ─────────────────────────────────────────────────────
-    # KEY CHANGE vs original: forward() now returns attn_weights as a 5th value
-    # so the explainer can report which cycle the model focused on most.
-    class Generalized_PM_Architecture(nn.Module):
-        def __init__(self, num_features=len(feature_cols), d_model=D_MODEL,
-                     nhead=N_HEAD, num_layers=NUM_LAYERS, dropout=DROPOUT):
-            super().__init__()
-            self.conv1 = nn.Conv1d(num_features, d_model, kernel_size=3, padding=1, dilation=1)
-            self.norm1 = nn.GroupNorm(1, d_model)
-            self.conv2 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=2, dilation=2)
-            self.norm2 = nn.GroupNorm(1, d_model)
-            self.conv3 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=4, dilation=4)
-            self.norm3 = nn.GroupNorm(1, d_model)
-            self.relu  = nn.ReLU()
+    # ── Sensor registry ────────────────────────────────────────────────
+    REGISTRY_SENSOR_ORDER = hp['REGISTRY_SENSOR_ORDER']
+    REGISTRY_SENSOR_IDS   = hp['REGISTRY_SENSOR_IDS']
 
-            pe = torch.zeros(SEQ_LEN, d_model)
-            pos      = torch.arange(0, SEQ_LEN, dtype=torch.float).unsqueeze(1)
-            div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
-            pe[:, 0::2] = torch.sin(pos * div_term)
-            pe[:, 1::2] = torch.cos(pos * div_term)
-            self.register_buffer('pos_encoder', pe.unsqueeze(0))
+    # ── Component map ──────────────────────────────────────────────────
+    pp = bundle['preprocessing']
+    COMPONENT_MAP = pp.get('component_map', {})
 
-            enc_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4,
-                dropout=dropout, batch_first=True, norm_first=True)
-            self.transformer = nn.TransformerEncoder(
-                enc_layer, num_layers=num_layers, enable_nested_tensor=False)
+    # ── Calibration & risk ─────────────────────────────────────────────
+    CALIBRATION_STATS = bundle.get('calibration')
+    RISK_THRESHOLDS   = bundle.get('risk_thresholds', {})
 
-            self.attn             = nn.Sequential(nn.Linear(d_model, 128), nn.GELU(), nn.Linear(128, 1))
-            self.health_embedding = nn.Sequential(nn.Linear(d_model, HEALTH_DIM), nn.GELU(), nn.Dropout(dropout))
-            self.rul_head         = nn.Linear(HEALTH_DIM, 2)
-            self.decoder_expansion= nn.Linear(HEALTH_DIM, d_model)
-            self.decoder_upsample = nn.ConvTranspose1d(d_model, d_model, kernel_size=SEQ_LEN)
-            self.decoder_conv     = nn.Sequential(
-                nn.Conv1d(d_model, d_model, 3, padding=1),
-                nn.GELU(),
-                nn.Conv1d(d_model, num_features, 3, padding=1))
+    # ── Preprocessing objects (default to FD002 to match mock data) ────────
+    default_dataset = 'FD002'
+    regime_kmeans   = pp['regime_models'].get(default_dataset)
+    regime_scalers  = pp['regime_scalers'].get(default_dataset, {})
+    global_scaler   = pp['regime_global_scalers'].get(default_dataset)
 
-        def forward(self, x):
-            h    = x.permute(0, 2, 1)
-            res1 = self.relu(self.norm1(self.conv1(h)))
-            res2 = self.relu(self.norm2(self.conv2(res1)) + res1)
-            h    = self.relu(self.norm3(self.conv3(res2)) + res2)
-            h    = h.permute(0, 2, 1) + self.pos_encoder
-            h    = self.transformer(h)
+    # sklearn's KMeans.predict expects float64 internally
+    if regime_kmeans is not None:
+        regime_kmeans.cluster_centers_ = regime_kmeans.cluster_centers_.astype(np.float64)
 
-            # Attention weights RETURNED so caller can inspect them
-            attn_scores  = self.attn(h).squeeze(-1)
-            attn_weights = torch.softmax(attn_scores, dim=1)   # (B, SEQ_LEN)
-            context      = torch.sum(attn_weights.unsqueeze(-1) * h, dim=1)
+    # ── Rebuild ensemble models ────────────────────────────────────────
+    ensemble_artifact = bundle['ensemble_artifact']
+    max_sensors = int(hp['REGISTERED_SENSOR_COUNT'])
 
-            health_idx = self.health_embedding(context)
-            rul_out    = self.rul_head(health_idx)
-            pred_rul   = self.relu(rul_out[:, 0])
-            log_var    = rul_out[:, 1]
-
-            dec   = self.decoder_upsample(self.decoder_expansion(health_idx).unsqueeze(-1))
-            recon = self.decoder_conv(dec).permute(0, 2, 1)
-
-            return pred_rul, log_var, recon, health_idx, attn_weights  # 5 values
-
-    for weights in package['ensemble_weights']:
-        model = Generalized_PM_Architecture(num_features=len(feature_cols)).to(device)
-        model.load_state_dict(weights)
+    for member in ensemble_artifact['members']:
+        model = SensorTokenRULModel(
+            max_sensors=max_sensors,
+            seq_len=SEQ_LEN,
+            d_model=D_MODEL,
+            nhead=N_HEAD,
+            num_layers=NUM_LAYERS,
+            dropout=DROPOUT,
+            health_dim=HEALTH_DIM,
+        ).to(device)
+        model.load_state_dict(member['state_dict'], strict=True)
         model.eval()
         ensemble_models.append(model)
 
-    print(f"✅ API Initialized | {len(ensemble_models)} models | "
-          f"{len(feature_cols)} features | device={device}")
+    print(f"[OK] API Initialized | {len(ensemble_models)} ensemble models | "
+          f"{max_sensors} sensors | SEQ_LEN={SEQ_LEN} | device={device}")
 
 
 @app.on_event("startup")
 async def startup_event():
-    load_production_core()
+    load_deploy_bundle()
+
 
 # ==========================================
-# 4. PREPROCESSING PIPELINE
+# 5. PREPROCESSING PIPELINE
+#    (token-based — no manual feature eng)
 # ==========================================
-def _rolling_slope_fast(series, w):
-    x = np.arange(w, dtype=np.float32);  x -= x.mean()
-    x_var = (x ** 2).sum()
-    def _slope(arr):
-        arr = arr - arr.mean()
-        return (x[:len(arr)] * arr).sum() / (x_var + 1e-8)
-    return series.rolling(w, min_periods=w).apply(_slope, raw=True).fillna(0)
+def _remap_op_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename op_setting_* → setting_* if the API client uses the old names."""
+    rename = {old: new for old, new in OP_COLS_API_MAP.items() if old in df.columns}
+    if rename:
+        df = df.rename(columns=rename)
+    return df
 
-def extract_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Single-engine feature engineering (no groupby — one engine per request)."""
-    df[important_sensors] = df[important_sensors].ewm(span=5, adjust=False).mean().astype(np.float32)
-    new_features = {}
-    for col in important_sensors:
-        new_features[f'{col}_diff'] = df[col].diff().fillna(0).astype(np.float32)
-        for w in [5, 10, 20, 30]:
-            new_features[f'{col}_mean_{w}'] = df[col].rolling(w, min_periods=1).mean().astype(np.float32)
-            new_features[f'{col}_std_{w}']  = df[col].rolling(w, min_periods=1).std().fillna(0).astype(np.float32)
-        for w in [10, 20]:
-            new_features[f'{col}_slope_{w}'] = _rolling_slope_fast(df[col], w).astype(np.float32)
-    return pd.concat([df, pd.DataFrame(new_features, index=df.index)], axis=1).fillna(0)
 
-# ==========================================
-# 5. EXPLAINABILITY — INTEGRATED GRADIENTS
-# ==========================================
-def _integrated_gradients(model, x: torch.Tensor) -> np.ndarray:
+def _apply_regime_scaling(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply KMeans regime detection + per-regime StandardScaler normalisation."""
+    if regime_kmeans is None:
+        return df
+
+    # Ensure op columns exist
+    for c in OP_COLS:
+        if c not in df.columns:
+            df[c] = 0.0
+
+    df['regime'] = regime_kmeans.predict(df[OP_COLS].values.astype(np.float64))
+
+    for regime_id, scaler in regime_scalers.items():
+        mask = df['regime'] == regime_id
+        if mask.sum() > 0:
+            df.loc[mask, REGISTRY_SENSOR_ORDER] = scaler.transform(
+                df.loc[mask, REGISTRY_SENSOR_ORDER]
+            )
+
+    return df
+
+
+def _build_token_tensors(df: pd.DataFrame, seq_len: int = None):
     """
-    Compute Integrated Gradients of pred_rul w.r.t. every input feature.
+    Convert a preprocessed DataFrame into the 5 tensor inputs
+    expected by SensorTokenRULModel.
 
-    What it does:
-        We interpolate IG_STEPS inputs between a zero baseline (neutral sensor
-        state) and the actual input x.  At each step we compute d(RUL)/d(input)
-        via backprop.  The average gradient × (x − baseline) gives each feature's
-        contribution to the final RUL number in interpretable units.
-
-    Returns:
-        ig: np.ndarray of shape (num_features,)
-            Positive  → feature pushed predicted RUL higher (healthy signal)
-            Negative  → feature pushed predicted RUL lower (degradation signal)
+    Returns dict with keys:
+        sensor_ids, sensor_values, sensor_mask, sensor_time_gap,
+        sensor_quality, operating_settings
+    each of shape (1, T, S) or (1, T, 3) for op settings.
     """
-    baseline = torch.zeros_like(x)                                     # (1, SEQ_LEN, F)
-    alphas   = torch.linspace(0, 1, IG_STEPS, device=x.device)        # (steps,)
+    if seq_len is None:
+        seq_len = SEQ_LEN
 
-    # Build all interpolated inputs at once: shape (steps, SEQ_LEN, F)
-    interp = (baseline + alphas[:, None, None, None] * (x - baseline)).squeeze(1)
-    interp.requires_grad_(True)
+    n_sensors = len(REGISTRY_SENSOR_ORDER)
+    n_rows    = len(df)
 
-    pred_rul, *_ = model(interp)     # forward on a batch of `steps` inputs
-    pred_rul.sum().backward()        # accumulate gradients
+    # Extract raw sensor values
+    values = df[REGISTRY_SENSOR_ORDER].values.astype(np.float32)  # (n_rows, S)
+    masks  = np.ones_like(values, dtype=np.float32)
+    quality = np.ones_like(values, dtype=np.int64)
 
-    grads     = interp.grad.detach()         # (steps, SEQ_LEN, F)
-    mean_grad = grads.mean(dim=(0, 1))       # (F,) — averaged over steps and time
+    # Compute time gaps (simple: all 0 since data is dense / regular)
+    gaps = np.zeros_like(values, dtype=np.float32)
 
-    # IG = mean_grad × (x − 0); baseline is zero so this simplifies to input mean
-    ig = mean_grad * x.squeeze(0).mean(dim=0).detach()   # (F,)
-    return ig.cpu().numpy()
+    # Pad or truncate to seq_len
+    if n_rows < seq_len:
+        pad_len = seq_len - n_rows
+        values  = np.pad(values,  ((pad_len, 0), (0, 0)), mode='edge')
+        masks   = np.pad(masks,   ((pad_len, 0), (0, 0)), mode='edge')
+        quality = np.pad(quality, ((pad_len, 0), (0, 0)), mode='edge')
+        gaps    = np.pad(gaps,    ((pad_len, 0), (0, 0)), mode='constant')
+    else:
+        values  = values[-seq_len:]
+        masks   = masks[-seq_len:]
+        quality = quality[-seq_len:]
+        gaps    = gaps[-seq_len:]
 
+    # Build sensor IDs (same for every timestep)
+    sensor_ids_row = np.array([REGISTRY_SENSOR_IDS[s] for s in REGISTRY_SENSOR_ORDER], dtype=np.int64)
+    sensor_ids = np.tile(sensor_ids_row[None, :], (seq_len, 1))  # (T, S)
 
-def _aggregate_to_sensors(ig: np.ndarray) -> Dict[str, dict]:
-    """
-    Roll up per-feature IG scores to per-sensor importance.
+    # Operating settings
+    op_values = np.zeros((seq_len, len(OP_COLS)), dtype=np.float32)
+    for i, col in enumerate(OP_COLS):
+        if col in df.columns:
+            col_vals = df[col].values.astype(np.float32)
+            if len(col_vals) < seq_len:
+                col_vals = np.pad(col_vals, (seq_len - len(col_vals), 0), mode='edge')
+            else:
+                col_vals = col_vals[-seq_len:]
+            op_values[:, i] = col_vals
 
-    Each base sensor contributes many derived features (diff, mean_10, std_20 …).
-    Importance = sum of |IG| across all features for that sensor.
-    Direction  = sign of the raw sensor feature's own IG value.
-
-    Returns dict sorted by importance descending:
-        { "sensor_14": { "importance": 0.31, "ig_sign": -2.4 }, … }
-    """
-    magnitude: Dict[str, float] = {}
-    direction: Dict[str, float] = {}
-
-    for feat_idx, ig_val in enumerate(ig):
-        sensor = sensor_map.get(feat_idx)
-        if sensor is None:
-            continue
-        magnitude[sensor] = magnitude.get(sensor, 0.0) + abs(float(ig_val))
-        # Raw feature has the exact same name as the sensor
-        if feature_cols[feat_idx] == sensor:
-            direction[sensor] = float(ig_val)
-
-    total = sum(magnitude.values()) or 1.0
     return {
-        s: {
-            "importance": round(mag / total, 4),
-            "ig_sign":    direction.get(s, 0.0),
-        }
-        for s, mag in sorted(magnitude.items(), key=lambda kv: kv[1], reverse=True)
+        "sensor_ids":          torch.tensor(sensor_ids[np.newaxis],   dtype=torch.long,    device=device),
+        "sensor_values":       torch.tensor(values[np.newaxis],       dtype=torch.float32, device=device),
+        "sensor_mask":         torch.tensor(masks[np.newaxis],        dtype=torch.float32, device=device),
+        "sensor_time_gap":     torch.tensor(gaps[np.newaxis],         dtype=torch.float32, device=device),
+        "sensor_quality":      torch.tensor(quality[np.newaxis],      dtype=torch.long,    device=device),
+        "operating_settings":  torch.tensor(op_values[np.newaxis],    dtype=torch.float32, device=device),
     }
 
+# ==========================================
+# 6. EXPLAINABILITY
+#    (reconstruction-based + leave-one-out)
+# ==========================================
+def _per_sensor_recon_scores(sensor_values, reconstruction, sensor_mask):
+    """Per-sensor reconstruction MSE, shape (B, S)."""
+    sq = (reconstruction - sensor_values) ** 2
+    masked_sq = sq * sensor_mask
+    counts = sensor_mask.sum(dim=1).clamp(min=1.0)
+    return masked_sq.sum(dim=1) / counts
 
-def _build_explanation(sensor: str, info: dict, predicted_rul: float) -> SensorExplanation:
-    """Convert raw IG numbers into a plain-English sentence for the API response."""
-    is_healthy = info["ig_sign"] > 0
-    pct        = round(info["importance"] * 100, 1)
-    rul_int    = int(predicted_rul)
 
-    direction_str = "raises_rul" if is_healthy else "lowers_rul"
-
-    if is_healthy:
-        sentence = (
-            f"{sensor} is operating normally and accounts for {pct}% of the "
-            f"factors supporting the {rul_int}-cycle life estimate."
+def _leave_one_out_impact(model, batch_tensors):
+    """
+    Mask each sensor one at a time and measure how much the
+    predicted RUL changes. Returns {sensor_name: abs_rul_change}.
+    """
+    with torch.no_grad():
+        base_pred, _, _, _ = model(
+            batch_tensors["sensor_ids"],
+            batch_tensors["sensor_values"],
+            batch_tensors["sensor_mask"],
+            batch_tensors["sensor_time_gap"],
+            batch_tensors["sensor_quality"],
+            batch_tensors.get("operating_settings"),
         )
-    else:
-        sentence = (
-            f"{sensor} shows signs of degradation and is the {pct}% contributor "
-            f"pulling the predicted life down to {rul_int} cycles."
-        )
+    base_val = float(base_pred[0].item())
 
-    return SensorExplanation(
-        sensor=sensor,
-        importance=info["importance"],
-        direction=direction_str,
-        plain_english=sentence,
-    )
+    scores = {}
+    for s_idx, sensor_name in enumerate(REGISTRY_SENSOR_ORDER):
+        masked = {k: (v.clone() if torch.is_tensor(v) else deepcopy(v))
+                  for k, v in batch_tensors.items()}
+        masked["sensor_mask"][:, :, s_idx] = 0.0
+        masked["sensor_quality"][:, :, s_idx] = 0
+
+        with torch.no_grad():
+            masked_pred, _, _, _ = model(
+                masked["sensor_ids"],
+                masked["sensor_values"],
+                masked["sensor_mask"],
+                masked["sensor_time_gap"],
+                masked["sensor_quality"],
+                masked.get("operating_settings"),
+            )
+        scores[sensor_name] = abs(float(masked_pred[0].item()) - base_val)
+    return scores
+
+
+def _safe_z(value, stats_dict):
+    """Z-score a value against calibration stats."""
+    if stats_dict is None:
+        return 0.0
+    std  = float(max(stats_dict.get("std", 1e-6), 1e-6))
+    mean = float(stats_dict.get("mean", 0.0))
+    return float((value - mean) / std)
+
+
+def _aggregate_to_components(sensor_scores: Dict[str, float]) -> Dict[str, float]:
+    """Average sensor scores into component-level scores."""
+    comp_scores = {}
+    for comp, sensors in COMPONENT_MAP.items():
+        vals = [sensor_scores.get(s, 0.0) for s in sensors]
+        comp_scores[comp] = float(np.mean(vals)) if vals else 0.0
+    return comp_scores
+
+
+def _build_sensor_explanations(
+    fused_scores: Dict[str, float],
+    predicted_rul: float,
+) -> List[SensorExplanation]:
+    """Build top-2 SensorExplanation objects from fused importance scores."""
+    # Sort by importance descending
+    total = sum(fused_scores.values()) or 1.0
+    sorted_sensors = sorted(fused_scores.items(), key=lambda kv: kv[1], reverse=True)
+
+    explanations = []
+    for sensor_name, score in sorted_sensors[:2]:
+        importance = round(score / total, 4)
+        pct = round(importance * 100, 1)
+        rul_int = int(predicted_rul)
+
+        # Use z-score to determine direction
+        z = 0.0
+        if CALIBRATION_STATS and 'sensors' in CALIBRATION_STATS:
+            z = _safe_z(score, CALIBRATION_STATS['sensors'].get(sensor_name))
+
+        # Higher z-score = more anomalous = degrading
+        is_healthy = z < 1.0
+        direction_str = "raises_rul" if is_healthy else "lowers_rul"
+
+        if is_healthy:
+            sentence = (
+                f"{sensor_name} is operating normally and accounts for {pct}% of the "
+                f"factors supporting the {rul_int}-cycle life estimate."
+            )
+        else:
+            sentence = (
+                f"{sensor_name} shows signs of degradation and is the {pct}% contributor "
+                f"pulling the predicted life down to {rul_int} cycles."
+            )
+
+        explanations.append(SensorExplanation(
+            sensor=sensor_name,
+            importance=importance,
+            direction=direction_str,
+            plain_english=sentence,
+        ))
+
+    return explanations
+
 
 # ==========================================
-# 6. /predict  (with explainability)
+# 7. /predict
 # ==========================================
 @app.post("/predict", response_model=InferenceResponse)
 async def predict_rul(request: InferenceRequest):
     if not request.flight_history:
         raise HTTPException(400, "flight_history cannot be empty.")
 
-    # ── 1. Validate and build DataFrame ───────────────────────────────
-    df      = pd.DataFrame(request.flight_history)
-    missing = [c for c in op_cols + all_sensor_cols if c not in df.columns]
-    if missing:
-        raise HTTPException(400, f"Missing columns in payload: {missing}")
+    # ── 1. Build DataFrame & remap columns ─────────────────────────────
+    df = pd.DataFrame(request.flight_history)
+    df = _remap_op_cols(df)
 
-    # ── 2. Apply KMeans regime + scalers ──────────────────────────────
-    df['regime'] = pipeline_data['kmeans'].predict(df[op_cols])
-    for regime, scaler in pipeline_data['scalers'].items():
-        mask = df['regime'] == regime
-        if mask.sum() > 0:
-            df.loc[mask, important_sensors] = scaler.transform(df.loc[mask, important_sensors])
+    # Ensure all registered sensors are present
+    for s in REGISTRY_SENSOR_ORDER:
+        if s not in df.columns:
+            raise HTTPException(400, f"Missing sensor column: {s}")
 
-    # ── 3. Feature engineering ─────────────────────────────────────────
-    df = extract_features(df)
+    # ── 2. Apply regime scaling ────────────────────────────────────────
+    df = _apply_regime_scaling(df)
 
-    # ── 4. Build sequence tensor  (1, SEQ_LEN, F) ──────────────────────
-    data = df[feature_cols].values.astype(np.float32)
-    if len(data) < SEQ_LEN:
-        data = np.pad(data, ((SEQ_LEN - len(data), 0), (0, 0)), 'edge')
-    seq      = data[-SEQ_LEN:]
-    X_tensor = torch.tensor(seq[np.newaxis], dtype=torch.float32, device=device)
+    # ── 3. Build token tensors ─────────────────────────────────────────
+    batch = _build_token_tensors(df)
 
-    # ── 5. Ensemble inference ──────────────────────────────────────────
-    ensemble_preds, ensemble_vars, ensemble_anoms, ensemble_attn = [], [], [], []
+    # ── 4. Ensemble inference ──────────────────────────────────────────
+    ensemble_preds, ensemble_vars, ensemble_anoms = [], [], []
+    ensemble_attn = []
 
     with torch.no_grad():
         for model in ensemble_models:
-            pred_rul, log_var, recon, _, attn_w = model(X_tensor)
-
+            pred_rul, log_var, reconstruction, info = model(
+                batch["sensor_ids"],
+                batch["sensor_values"],
+                batch["sensor_mask"],
+                batch["sensor_time_gap"],
+                batch["sensor_quality"],
+                batch.get("operating_settings"),
+            )
             ensemble_preds.append(float(np.clip(pred_rul.cpu().item(), 0, RUL_CAP)))
             ensemble_vars.append(float(torch.exp(log_var).cpu().item()))
-            ensemble_anoms.append(float(torch.mean((recon - X_tensor) ** 2).cpu().item()))
-            ensemble_attn.append(attn_w.squeeze(0).cpu().numpy())   # (SEQ_LEN,)
+
+            # Anomaly = mean reconstruction error
+            recon_err = float(torch.mean(
+                (reconstruction - batch["sensor_values"]) ** 2
+                * batch["sensor_mask"]
+            ).cpu().item())
+            ensemble_anoms.append(recon_err)
+            ensemble_attn.append(info["temporal_attn"].squeeze(0).cpu().numpy())
 
     final_rul = float(np.mean(ensemble_preds))
     margin    = float(2 * np.sqrt(np.mean(ensemble_vars) + np.var(ensemble_preds)))
     anomaly   = float(np.mean(ensemble_anoms))
 
-    # Peak attention cycle — 0-indexed within the last 40 cycles
-    mean_attn       = np.mean(ensemble_attn, axis=0)   # (SEQ_LEN,)
+    # Peak attention cycle — 0-indexed within the last SEQ_LEN cycles
+    mean_attn       = np.mean(ensemble_attn, axis=0)
     attn_peak_cycle = int(np.argmax(mean_attn))
 
-    # ── 6. Integrated Gradients explainability ─────────────────────────
-    # Run IG on the first ensemble model (all share the same frozen encoder,
-    # so attributions are representative of the full ensemble).
-    ig_scores    = _integrated_gradients(ensemble_models[0], X_tensor.clone())
-    sensor_attrs = _aggregate_to_sensors(ig_scores)   # sorted by importance
+    # ── 5. Explainability ──────────────────────────────────────────────
+    explain_model = ensemble_models[0]
 
-    # Top 2 sensors only
-    top2        = list(sensor_attrs.items())[:2]
-    top_sensors = [_build_explanation(name, info, final_rul) for name, info in top2]
+    # Reconstruction scores
+    with torch.no_grad():
+        _, _, recon, _ = explain_model(
+            batch["sensor_ids"],
+            batch["sensor_values"],
+            batch["sensor_mask"],
+            batch["sensor_time_gap"],
+            batch["sensor_quality"],
+            batch.get("operating_settings"),
+        )
+    recon_scores_tensor = _per_sensor_recon_scores(
+        batch["sensor_values"], recon, batch["sensor_mask"]
+    )
+    recon_scores = {
+        sensor: float(recon_scores_tensor[0, idx].item())
+        for idx, sensor in enumerate(REGISTRY_SENSOR_ORDER)
+    }
 
-    # ── 7. Status label ────────────────────────────────────────────────
-    if final_rul <= 30 or anomaly > 1.5:
+    # Leave-one-out RUL impact
+    impact_scores = _leave_one_out_impact(explain_model, batch)
+
+    # Fused scores
+    fused_scores = {
+        s: recon_scores.get(s, 0.0) + impact_scores.get(s, 0.0)
+        for s in REGISTRY_SENSOR_ORDER
+    }
+
+    top_sensors = _build_sensor_explanations(fused_scores, final_rul)
+
+    # ── 6. Status label ────────────────────────────────────────────────
+    anomaly_z = 0.0
+    if CALIBRATION_STATS and 'global' in CALIBRATION_STATS:
+        comp_scores = _aggregate_to_components(fused_scores)
+        global_anomaly = float(np.mean(list(comp_scores.values()))) if comp_scores else 0.0
+        anomaly_z = _safe_z(global_anomaly, CALIBRATION_STATS['global'])
+
+    if final_rul <= 30 or anomaly_z >= 2.0:
         status = "CRITICAL — MAINTENANCE REQUIRED"
-    elif final_rul <= 60:
+    elif final_rul <= 60 or anomaly_z >= 1.0:
         status = "WARNING — DEGRADATION DETECTED"
     else:
         status = "HEALTHY"
@@ -374,8 +669,7 @@ async def predict_rul(request: InferenceRequest):
     )
 
 # ==========================================
-# 7. /detect_changepoint  (unchanged logic,
-#    updated to unpack 5 return values)
+# 8. /detect_changepoint
 # ==========================================
 @app.post("/detect_changepoint")
 async def detect_changepoint(request: InferenceRequest):
@@ -383,33 +677,80 @@ async def detect_changepoint(request: InferenceRequest):
         raise HTTPException(400, "Need at least 10 flights to establish a baseline.")
 
     df = pd.DataFrame(request.flight_history)
-    df['regime'] = pipeline_data['kmeans'].predict(df[op_cols])
-    for regime, scaler in pipeline_data['scalers'].items():
-        mask = df['regime'] == regime
-        if mask.sum() > 0:
-            df.loc[mask, important_sensors] = scaler.transform(df.loc[mask, important_sensors])
-    df = extract_features(df)
+    df = _remap_op_cols(df)
 
-    data       = df[feature_cols].values.astype(np.float32)
-    num_flights= len(data)
-    X_history  = []
+    # Ensure sensors present
+    for s in REGISTRY_SENSOR_ORDER:
+        if s not in df.columns:
+            raise HTTPException(400, f"Missing sensor column: {s}")
 
-    for i in range(num_flights):
-        window = data[max(0, i - SEQ_LEN + 1): i + 1]
-        if len(window) < SEQ_LEN:
-            window = np.pad(window, ((SEQ_LEN - len(window), 0), (0, 0)), 'edge')
-        X_history.append(window)
+    df = _apply_regime_scaling(df)
 
-    X_tensor = torch.tensor(np.array(X_history), dtype=torch.float32, device=device)
+    # Build per-flight sliding windows
+    num_flights = len(df)
+    n_sensors   = len(REGISTRY_SENSOR_ORDER)
+
+    values_full = df[REGISTRY_SENSOR_ORDER].values.astype(np.float32)
+    masks_full  = np.ones_like(values_full, dtype=np.float32)
+    quality_full = np.ones_like(values_full, dtype=np.int64)
+
+    # Op settings
+    op_full = np.zeros((num_flights, len(OP_COLS)), dtype=np.float32)
+    for i, col in enumerate(OP_COLS):
+        if col in df.columns:
+            op_full[:, i] = df[col].values.astype(np.float32)
+
+    sensor_ids_row = np.array([REGISTRY_SENSOR_IDS[s] for s in REGISTRY_SENSOR_ORDER], dtype=np.int64)
+
+    # Build windows
+    all_ids, all_vals, all_masks, all_gaps, all_qual, all_ops = [], [], [], [], [], []
+
+    for end_idx in range(num_flights):
+        start_idx = max(0, end_idx - SEQ_LEN + 1)
+        wv = values_full[start_idx:end_idx + 1]
+        wm = masks_full[start_idx:end_idx + 1]
+        wq = quality_full[start_idx:end_idx + 1]
+        wo = op_full[start_idx:end_idx + 1]
+        L = wv.shape[0]
+
+        sv = np.zeros((SEQ_LEN, n_sensors), dtype=np.float32)
+        sm = np.zeros((SEQ_LEN, n_sensors), dtype=np.float32)
+        sq = np.zeros((SEQ_LEN, n_sensors), dtype=np.int64)
+        sg = np.zeros((SEQ_LEN, n_sensors), dtype=np.float32)
+        so = np.zeros((SEQ_LEN, len(OP_COLS)), dtype=np.float32)
+
+        sv[-L:] = wv
+        sm[-L:] = wm
+        sq[-L:] = wq
+        so[-L:] = wo
+
+        si = np.tile(sensor_ids_row[None, :], (SEQ_LEN, 1))
+
+        all_ids.append(si)
+        all_vals.append(sv)
+        all_masks.append(sm)
+        all_gaps.append(sg)
+        all_qual.append(sq)
+        all_ops.append(so)
+
+    batch_ids  = torch.tensor(np.array(all_ids),  dtype=torch.long,    device=device)
+    batch_vals = torch.tensor(np.array(all_vals),  dtype=torch.float32, device=device)
+    batch_mask = torch.tensor(np.array(all_masks), dtype=torch.float32, device=device)
+    batch_gap  = torch.tensor(np.array(all_gaps),  dtype=torch.float32, device=device)
+    batch_qual = torch.tensor(np.array(all_qual),  dtype=torch.long,    device=device)
+    batch_ops  = torch.tensor(np.array(all_ops),   dtype=torch.float32, device=device)
 
     ensemble_anomalies = np.zeros(num_flights)
     ensemble_ruls      = np.zeros(num_flights)
 
     with torch.no_grad():
         for model in ensemble_models:
-            pred_rul, _, recon, _, _ = model(X_tensor)   # unpack all 5 values
-            ensemble_ruls      += np.clip(pred_rul.cpu().numpy().flatten(), 0, RUL_CAP)
-            ensemble_anomalies += torch.mean((recon - X_tensor) ** 2, dim=(1, 2)).cpu().numpy()
+            pred_rul, _, recon, _ = model(
+                batch_ids, batch_vals, batch_mask, batch_gap, batch_qual, batch_ops
+            )
+            ensemble_ruls += np.clip(pred_rul.cpu().numpy().flatten(), 0, RUL_CAP)
+            recon_err = ((recon - batch_vals) ** 2 * batch_mask).mean(dim=(1, 2)).cpu().numpy()
+            ensemble_anomalies += recon_err
 
     ensemble_ruls      /= len(ensemble_models)
     ensemble_anomalies /= len(ensemble_models)
@@ -425,13 +766,15 @@ async def detect_changepoint(request: InferenceRequest):
             change_point_cycle = cycle + 1
             trigger_reason = (
                 f"Thermodynamic degradation began "
-                f"(RUL dropped to {ensemble_ruls[cycle]:.1f})")
+                f"(RUL dropped to {ensemble_ruls[cycle]:.1f})"
+            )
             break
         if cycle > 10 and ensemble_anomalies[cycle] > anomaly_threshold:
             change_point_cycle = cycle + 1
             trigger_reason = (
                 f"Anomaly spike detected "
-                f"(score: {ensemble_anomalies[cycle]:.4f})")
+                f"(score: {ensemble_anomalies[cycle]:.4f})"
+            )
             break
 
     return {
@@ -443,7 +786,7 @@ async def detect_changepoint(request: InferenceRequest):
     }
 
 # ==========================================
-# 8. ENTRYPOINT
+# 9. ENTRYPOINT
 # ==========================================
 if __name__ == "__main__":
     import uvicorn

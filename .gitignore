@@ -15,3 +15,10 @@ next.user-config.*
 node_modules/
 .next/
 .DS_Store
+
+# Python & Backend ignores
+__pycache__/
+*.py[cod]
+*~
+venv/
+.env
