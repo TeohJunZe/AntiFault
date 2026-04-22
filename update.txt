@@ -1,0 +1,9 @@
+for the detailed analysis report, make it look more advanced, dont just words in it
+
+the alert notification icon, after clicking it show nothing
+
+for the ai recommendation and analysis in maintenance page, make it more advanced and detailed
+
+for the ai expert analysis in diagnostics page, make it more look advanced and add color for the heading of main points
+
+for the maintenance page, the ai suggest, i want it like a button below the schedule and after click it all the info will be auto filled

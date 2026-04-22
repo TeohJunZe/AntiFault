@@ -2,6 +2,7 @@
 
 import Image from 'next/image'
 import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useTheme } from 'next-themes'
 import {
   mockMachines,
   mockAlerts,
@@ -26,6 +27,7 @@ import { SimulationPanel } from '@/components/simulation-panel'
 import { TechnologySuggestions } from '@/components/technology-suggestions'
 import { AIAssistant } from '@/components/ai-assistant'
 import { MaintenanceBoard } from '@/components/maintenance-board'
+import { AdminDashboard } from '@/components/admin-dashboard'
 import { HUDOverlay } from '@/components/hud/HUDOverlay'
 import { useNeoHUD } from '@/components/hud/NeoHUDContext'
 import { Button } from '@/components/ui/button'
@@ -50,13 +52,21 @@ import {
   Lightbulb,
   X,
   Box,
-  Clock
+  Clock,
+  Sun,
+  Moon,
+  Shield,
+  HardHat
 } from 'lucide-react'
 
 const LAYOUT_KEY = 'factoryFloorLayout'
 
 export default function DigitalTwinDashboard() {
   const { setHUDVisible, isChatOpen, isHUDVisible, activeUIModules, activeContextData, setChatOpen, setActiveUIModules } = useNeoHUD()
+  const { theme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  const [dashboardMode, setDashboardMode] = useState<'technician' | 'admin'>('technician')
   const [machines, setMachines] = useState<Machine[]>(() => {
     if (typeof window === 'undefined') return mockMachines
     try {
@@ -264,14 +274,62 @@ export default function DigitalTwinDashboard() {
                 <p className="text-xs text-muted-foreground">
                   {selectedMachine
                     ? `${selectedMachine.type} - ${selectedMachine.status.toUpperCase()}`
-                    : 'Predictive Maintenance Platform'
+                    : dashboardMode === 'admin' ? 'Admin Dashboard' : 'Technician Dashboard'
                   }
                 </p>
               </div>
             </div>
+
+            {/* Admin / Technician Toggle */}
+            {!selectedMachine && (
+              <div className="hidden md:flex items-center bg-muted/50 rounded-lg p-1 border border-border gap-1">
+                <button
+                  onClick={() => { setDashboardMode('technician'); setSelectedMachineId(null); }}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200',
+                    dashboardMode === 'technician'
+                      ? 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 shadow-sm border border-cyan-500/30'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <HardHat className="w-3.5 h-3.5" />
+                  Technician
+                </button>
+                <button
+                  onClick={() => { setDashboardMode('admin'); setSelectedMachineId(null); setSelectedComponent(null); }}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200',
+                    dashboardMode === 'admin'
+                      ? 'bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 shadow-sm border border-indigo-500/30'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  Admin
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Dark/Light Mode Toggle */}
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className={cn(
+                'relative w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 border shadow-md',
+                mounted && theme === 'dark'
+                  ? 'bg-gradient-to-br from-amber-400 to-orange-500 border-amber-300/50 shadow-amber-500/25 hover:shadow-amber-500/40 hover:scale-105'
+                  : 'bg-gradient-to-br from-indigo-600 to-slate-800 border-indigo-400/30 shadow-indigo-500/25 hover:shadow-indigo-500/40 hover:scale-105'
+              )}
+              title={mounted && theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {mounted && theme === 'dark' ? (
+                <Sun className="w-5 h-5 text-white drop-shadow-sm transition-transform duration-300 hover:rotate-45" />
+              ) : (
+                <Moon className="w-5 h-5 text-white drop-shadow-sm transition-transform duration-300 hover:-rotate-12" />
+              )}
+            </button>
+
             {/* Global Health */}
             <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-lg">
               <Activity className="w-4 h-4 text-muted-foreground" />
@@ -360,14 +418,17 @@ export default function DigitalTwinDashboard() {
           isChatOpen && 'lg:mr-[400px]',
           isHUDVisible && 'opacity-0 pointer-events-none'
         )}>
-          {!selectedMachine ? (
-            // COMMAND CENTER VIEW
+          {dashboardMode === 'admin' && !selectedMachine ? (
+            // ADMIN DASHBOARD VIEW
+            <AdminDashboard machines={activeMachines} />
+          ) : !selectedMachine ? (
+            // COMMAND CENTER VIEW (TECHNICIAN)
             <div className="space-y-6">
               {/* Top Stats Row */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <Card className="md:col-span-1">
                   <CardContent className="pt-6">
-                    <HealthGauge value={globalHealth} label="Global Health Index" size="md" />
+                    <HealthGauge value={globalHealth} label="Overall System Health" size="md" />
                   </CardContent>
                 </Card>
 
@@ -383,11 +444,11 @@ export default function DigitalTwinDashboard() {
                       <button
                         onClick={() => setStatFilter(statFilter === 'optimal' ? null : 'optimal')}
                         className={cn(
-                          "bg-success/10 rounded-lg p-4 text-center transition-all hover:bg-success/20 hover:scale-105",
+                          "bg-success/15 dark:bg-success/10 rounded-lg p-4 text-center transition-all hover:bg-success/25 dark:hover:bg-success/20 hover:scale-105",
                           statFilter === 'optimal' && "ring-2 ring-success ring-offset-2 ring-offset-background"
                         )}
                       >
-                        <div className="text-3xl font-bold text-success">
+                        <div className="text-3xl font-bold text-success dark:text-success">
                           {activeMachines.filter(m => m.status === 'optimal').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Optimal</div>
@@ -395,11 +456,11 @@ export default function DigitalTwinDashboard() {
                       <button
                         onClick={() => setStatFilter(statFilter === 'impaired' ? null : 'impaired')}
                         className={cn(
-                          "bg-warning/10 rounded-lg p-4 text-center transition-all hover:bg-warning/20 hover:scale-105",
+                          "bg-warning/15 dark:bg-warning/10 rounded-lg p-4 text-center transition-all hover:bg-warning/25 dark:hover:bg-warning/20 hover:scale-105",
                           statFilter === 'impaired' && "ring-2 ring-warning ring-offset-2 ring-offset-background"
                         )}
                       >
-                        <div className="text-3xl font-bold text-warning">
+                        <div className="text-3xl font-bold text-warning dark:text-warning">
                           {activeMachines.filter(m => m.status === 'impaired').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Impaired</div>
@@ -407,11 +468,11 @@ export default function DigitalTwinDashboard() {
                       <button
                         onClick={() => setStatFilter(statFilter === 'critical' ? null : 'critical')}
                         className={cn(
-                          "bg-destructive/10 rounded-lg p-4 text-center transition-all hover:bg-destructive/20 hover:scale-105",
+                          "bg-destructive/15 dark:bg-destructive/10 rounded-lg p-4 text-center transition-all hover:bg-destructive/25 dark:hover:bg-destructive/20 hover:scale-105",
                           statFilter === 'critical' && "ring-2 ring-destructive ring-offset-2 ring-offset-background"
                         )}
                       >
-                        <div className="text-3xl font-bold text-destructive">
+                        <div className="text-3xl font-bold text-destructive dark:text-destructive">
                           {activeMachines.filter(m => m.status === 'critical').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Critical</div>
@@ -419,11 +480,11 @@ export default function DigitalTwinDashboard() {
                       <button
                         onClick={() => setStatFilter(statFilter === 'scheduled' ? null : 'scheduled')}
                         className={cn(
-                          "bg-primary/10 rounded-lg p-4 text-center transition-all hover:bg-primary/20 hover:scale-105",
+                          "bg-primary/15 dark:bg-primary/10 rounded-lg p-4 text-center transition-all hover:bg-primary/25 dark:hover:bg-primary/20 hover:scale-105",
                           statFilter === 'scheduled' && "ring-2 ring-primary ring-offset-2 ring-offset-background"
                         )}
                       >
-                        <div className="text-3xl font-bold text-primary">
+                        <div className="text-3xl font-bold text-primary dark:text-primary">
                           {tasks.filter(t => t.status === 'scheduled').length}
                         </div>
                         <div className="text-sm text-muted-foreground">Scheduled</div>
@@ -505,11 +566,11 @@ export default function DigitalTwinDashboard() {
                       className={cn(
                         'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
                         dashboardTab === 'fleet'
-                          ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shadow-sm shadow-indigo-500/10'
+                          ? 'bg-indigo-500/30 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-400 border border-indigo-500/40 dark:border-indigo-500/30 shadow-sm shadow-indigo-500/15 dark:shadow-indigo-500/10'
                           : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                       )}
                     >
-                      <Box className={cn('w-4 h-4', dashboardTab === 'fleet' && 'text-indigo-400')} />
+                      <Box className={cn('w-4 h-4', dashboardTab === 'fleet' && 'text-indigo-700 dark:text-indigo-400')} />
                       Fleet Overview
                     </button>
                     <button
@@ -517,11 +578,11 @@ export default function DigitalTwinDashboard() {
                       className={cn(
                         'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
                         dashboardTab === 'ttf'
-                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-sm shadow-amber-500/10'
+                          ? 'bg-amber-500/30 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400 border border-amber-500/40 dark:border-amber-500/30 shadow-sm shadow-amber-500/15 dark:shadow-amber-500/10'
                           : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                       )}
                     >
-                      <Clock className={cn('w-4 h-4', dashboardTab === 'ttf' && 'text-amber-400')} />
+                      <Clock className={cn('w-4 h-4', dashboardTab === 'ttf' && 'text-amber-700 dark:text-amber-400')} />
                       Time to Failure
                     </button>
                     <button
@@ -529,20 +590,20 @@ export default function DigitalTwinDashboard() {
                       className={cn(
                         'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
                         dashboardTab === 'maintenance'
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10'
+                          ? 'bg-emerald-500/30 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/40 dark:border-emerald-500/30 shadow-sm shadow-emerald-500/15 dark:shadow-emerald-500/10'
                           : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                       )}
                     >
-                      <Wrench className={cn('w-4 h-4', dashboardTab === 'maintenance' && 'text-emerald-400')} />
+                      <Wrench className={cn('w-4 h-4', dashboardTab === 'maintenance' && 'text-emerald-700 dark:text-emerald-400')} />
                       Maintenance
                     </button>
                   </div>
                 </div>
 
                 <TabsContent value="fleet" className="mt-0">
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 gap-6">
                     {/* 3D Fleet View */}
-                    <Card className="lg:col-span-2">
+                    <Card>
                       <CardHeader className="pb-2">
                         <CardTitle className="text-sm font-medium">3D Factory Floor</CardTitle>
                       </CardHeader>
@@ -559,27 +620,6 @@ export default function DigitalTwinDashboard() {
                           onAddMachine={handleAddMachine}
                           onUpdateMachinePosition={handleUpdateMachinePosition}
                           onRemoveMachine={handleRemoveMachine}
-                        />
-                      </CardContent>
-                    </Card>
-
-                    {/* Alerts Panel */}
-                    <Card className="lg:col-span-1 flex flex-col">
-                      <CardHeader className="pb-2 flex-shrink-0">
-                        <CardTitle className="text-sm font-medium flex items-center gap-2">
-                          <Bell className={cn(
-                            'w-4 h-4',
-                            criticalAlerts.length > 0 ? 'text-destructive' : 'text-primary'
-                          )} />
-                          System Alerts
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="flex-1 overflow-hidden">
-                        <AlertPanel
-                          alerts={alerts}
-                          onAcknowledge={handleAcknowledgeAlert}
-                          onDismiss={handleDismissAlert}
-                          onAlertClick={handleAlertClick}
                         />
                       </CardContent>
                     </Card>

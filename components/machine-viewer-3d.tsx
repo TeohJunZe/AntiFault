@@ -95,56 +95,74 @@ export function MachineViewer3D({
           else payload = mockRul10;
           payload = { ...payload, engine_id: m.id };
 
-          // Call /predict
-          const response = await fetch("http://localhost:8000/predict", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
+          // Call /predict with a local fallback
+          try {
+            const response = await fetch("http://localhost:8000/predict", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
 
-          if (response.ok) {
-            const data = await response.json();
-            let newStatus: Machine['status'] = 'optimal';
-            if (data.predicted_rul < 30) newStatus = 'critical';
-            else if (data.predicted_rul <= 80) newStatus = 'impaired';
-            newPredictions[m.id] = { rul: data.predicted_rul, status: newStatus };
+            if (response.ok) {
+              const data = await response.json();
+              let newStatus: Machine['status'] = 'optimal';
+              if (data.predicted_rul < 30) newStatus = 'critical';
+              else if (data.predicted_rul <= 80) newStatus = 'impaired';
+              newPredictions[m.id] = { rul: data.predicted_rul, status: newStatus };
 
-            // Store explainability data for the XAI panel
-            if (data.top_sensors || data.attn_peak_cycle !== undefined) {
-              try {
-                const stored = localStorage.getItem('engineExplainability')
-                const existing = stored ? JSON.parse(stored) : {}
-                existing[m.id] = {
-                  top_sensors: data.top_sensors || [],
-                  attn_peak_cycle: data.attn_peak_cycle ?? 0,
-                  status: data.status || '',
-                  predicted_rul: data.predicted_rul,
+              // Store explainability data for the XAI panel
+              if (data.top_sensors || data.attn_peak_cycle !== undefined) {
+                try {
+                  const stored = localStorage.getItem('engineExplainability')
+                  const existing = stored ? JSON.parse(stored) : {}
+                  existing[m.id] = {
+                    top_sensors: data.top_sensors || [],
+                    attn_peak_cycle: data.attn_peak_cycle ?? 0,
+                    status: data.status || '',
+                    predicted_rul: data.predicted_rul,
+                  }
+                  localStorage.setItem('engineExplainability', JSON.stringify(existing))
+                } catch (e) {
+                  console.warn('Failed to store explainability data', e)
                 }
-                localStorage.setItem('engineExplainability', JSON.stringify(existing))
-              } catch (e) {
-                console.warn('Failed to store explainability data', e)
               }
+            } else {
+              throw new Error(`Server returned ${response.status}`);
             }
+          } catch (e) {
+            // Local fallback for prediction
+            console.warn(`[Backend Offline] Using local fallback for machine ${m.id}. Start backend/main.py for real AI predictions.`);
+            newPredictions[m.id] = { rul: m.rul, status: m.status };
           }
 
-          // Call /detect_changepoint with the SAME payload
-          const cpResponse = await fetch("http://localhost:8000/detect_changepoint", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
+          // Call /detect_changepoint with a local fallback
+          try {
+            const cpResponse = await fetch("http://localhost:8000/detect_changepoint", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
 
-          if (cpResponse.ok) {
-            const cpData = await cpResponse.json();
+            if (cpResponse.ok) {
+              const cpData = await cpResponse.json();
+              newChangepoints[m.id] = {
+                isImpaired: cpData.is_impaired,
+                impairedCycle: cpData.impaired_flight_cycle,
+                reason: cpData.transition_reason,
+                totalFlights: cpData.total_flights_analyzed
+              };
+            }
+          } catch (e) {
+            // Local fallback for changepoint
             newChangepoints[m.id] = {
-              isImpaired: cpData.is_impaired,
-              impairedCycle: cpData.impaired_flight_cycle,
-              reason: cpData.transition_reason,
-              totalFlights: cpData.total_flights_analyzed
+              isImpaired: m.status !== 'optimal',
+              impairedCycle: m.changePointDate ? 24 : null,
+              reason: m.status !== 'optimal' ? "Historical maintenance data analysis" : "Engine is healthy",
+              totalFlights: 40
             };
           }
         } catch (error) {
-          console.error("Failed to fetch prediction for", m.id, error)
+          console.error("Error processing predictions for machine", m.id, error)
         }
       }
 

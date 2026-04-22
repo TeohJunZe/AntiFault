@@ -1,0 +1,6 @@
+Order ID,Product Type,Quantity,Deadline,Price Per Unit (RM),Customer,Priority
+ORD-2026-0451,Precision Components,3500,2026-05-15,18.50,Proton Manufacturing Sdn Bhd,High
+ORD-2026-0452,Standard Parts,8000,2026-06-01,12.00,Perodua Auto Parts,Medium
+ORD-2026-0453,Heavy Machinery Parts,1200,2026-05-10,45.00,Sime Darby Industrial,Critical
+ORD-2026-0454,Electronic Assemblies,5000,2026-05-28,22.75,Intel Penang,High
+ORD-2026-0455,Custom Orders,2000,2026-05-20,35.00,Top Glove Corporation,Medium
