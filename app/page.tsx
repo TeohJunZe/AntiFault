@@ -1,4 +1,4 @@
-'use client'
+"use client";
 
 import Image from 'next/image'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
@@ -11,9 +11,9 @@ import {
   Machine,
   MachineComponent,
   Alert,
-  generateSensorHistoryForHealth
-} from '@/lib/data'
-import { cn } from '@/lib/utils'
+  generateSensorHistoryForHealth,
+} from "@/lib/data";
+import { cn } from "@/lib/utils";
 
 import { UrgencyQueue } from '@/components/urgency-queue'
 import { AlertPanel } from '@/components/alert-panel'
@@ -38,7 +38,7 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover"
+} from "@/components/ui/popover";
 import {
   Factory,
   Bot,
@@ -62,7 +62,7 @@ import {
   AlertTriangle
 } from 'lucide-react'
 
-const LAYOUT_KEY = 'factoryFloorLayout'
+const LAYOUT_KEY = "factoryFloorLayout";
 
 export default function DigitalTwinDashboard() {
   const { setHUDVisible, isChatOpen, isHUDVisible, activeUIModules, activeContextData, setChatOpen, setActiveUIModules } = useNeoHUD()
@@ -75,202 +75,253 @@ export default function DigitalTwinDashboard() {
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(LAYOUT_KEY)
-      if (saved) setMachines(JSON.parse(saved) as Machine[])
+      const saved = localStorage.getItem(LAYOUT_KEY);
+      if (saved) setMachines(JSON.parse(saved) as Machine[]);
     } catch { }
-    isHydrated.current = true
-  }, [])
-  const [tasks] = useState(mockMaintenanceTasks)
-  const [hiddenAlertIds, setHiddenAlertIds] = useState<Set<string>>(new Set())
-  const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<Set<string>>(new Set())
-  const [isFloorEditMode, setIsFloorEditMode] = useState(false)
-  const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null)
-  const [selectedComponent, setSelectedComponent] = useState<MachineComponent | null>(null)
-  const [activeTab, setActiveTab] = useState('diagnostics')
-  const [dashboardTab, setDashboardTab] = useState('fleet')
-  const [statFilter, setStatFilter] = useState<'optimal' | 'impaired' | 'critical' | 'scheduled' | null>(null)
-  const [predictionRefreshToken, setPredictionRefreshToken] = useState(0)
+    isHydrated.current = true;
+  }, []);
+  const [tasks] = useState(mockMaintenanceTasks);
+  const [hiddenAlertIds, setHiddenAlertIds] = useState<Set<string>>(new Set());
+  const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [isFloorEditMode, setIsFloorEditMode] = useState(false);
+  const [selectedMachineId, setSelectedMachineId] = useState<string | null>(
+    null,
+  );
+  const [selectedComponent, setSelectedComponent] =
+    useState<MachineComponent | null>(null);
+  const [activeTab, setActiveTab] = useState("diagnostics");
+  const [dashboardTab, setDashboardTab] = useState("fleet");
+  const [statFilter, setStatFilter] = useState<
+    "optimal" | "impaired" | "critical" | "scheduled" | null
+  >(null);
+  const [predictionRefreshToken, setPredictionRefreshToken] = useState(0);
+  const [focusedModuleInfo, setFocusedModuleInfo] = useState<{
+    label: string;
+    meshNames: string[];
+  } | null>(null);
+  const [selectedMeshName, setSelectedMeshName] = useState<string | null>(null);
 
-  const [predictions, setPredictions] = useState<Record<string, { rul: number, status: Machine['status'] }>>({})
+  const [predictions, setPredictions] = useState<
+    Record<string, { rul: number; status: Machine["status"] }>
+  >({});
 
   useEffect(() => {
     const handleStorage = () => {
       try {
-        const cached = localStorage.getItem('enginePredictions')
+        const cached = localStorage.getItem("enginePredictions");
         if (cached) {
-          setPredictions(JSON.parse(cached))
+          setPredictions(JSON.parse(cached));
         }
       } catch (e) { }
-    }
-    handleStorage()
-    window.addEventListener('predictionsUpdated', handleStorage)
-    return () => window.removeEventListener('predictionsUpdated', handleStorage)
-  }, [])
+    };
+    handleStorage();
+    window.addEventListener("predictionsUpdated", handleStorage);
+    return () =>
+      window.removeEventListener("predictionsUpdated", handleStorage);
+  }, []);
 
   const activeMachines = useMemo(() => {
-    return machines.map(m => ({
+    return machines.map((m) => ({
       ...m,
       rul: predictions[m.id]?.rul ?? m.rul,
-      status: predictions[m.id]?.status ?? m.status
-    }))
-  }, [machines, predictions])
+      status: predictions[m.id]?.status ?? m.status,
+    }));
+  }, [machines, predictions]);
 
   const selectedMachine = useMemo(
-    () => activeMachines.find(m => m.id === selectedMachineId) || null,
-    [activeMachines, selectedMachineId]
-  )
+    () => activeMachines.find((m) => m.id === selectedMachineId) || null,
+    [activeMachines, selectedMachineId],
+  );
 
   const globalHealth = useMemo(
     () => calculateGlobalHealthIndex(activeMachines),
-    [activeMachines]
-  )
+    [activeMachines],
+  );
 
   const alerts = useMemo(() => {
-    return activeMachines.map(m => {
-      if (m.rul <= 30) {
-        return {
-          id: `alert-critical-${m.id}`,
-          machineId: m.id,
-          machineName: m.name,
-          severity: 'critical' as const,
-          message: `Critical RUL detected: ${m.rul.toFixed(0)} days remaining. Immediate maintenance required.`,
-          timestamp: new Date().toISOString(),
-          acknowledged: acknowledgedAlertIds.has(`alert-critical-${m.id}`)
+    return activeMachines
+      .map((m) => {
+        if (m.rul <= 30) {
+          return {
+            id: `alert-critical-${m.id}`,
+            machineId: m.id,
+            machineName: m.name,
+            severity: "critical" as const,
+            message: `Critical RUL detected: ${m.rul.toFixed(0)} days remaining. Immediate maintenance required.`,
+            timestamp: new Date().toISOString(),
+            acknowledged: acknowledgedAlertIds.has(`alert-critical-${m.id}`),
+          };
+        } else if (m.rul <= 80) {
+          return {
+            id: `alert-warning-${m.id}`,
+            machineId: m.id,
+            machineName: m.name,
+            severity: "warning" as const,
+            message: `High risk: RUL has fallen to ${m.rul.toFixed(0)} days. Schedule maintenance soon.`,
+            timestamp: new Date().toISOString(),
+            acknowledged: acknowledgedAlertIds.has(`alert-warning-${m.id}`),
+          };
         }
-      } else if (m.rul <= 80) {
-        return {
-          id: `alert-warning-${m.id}`,
-          machineId: m.id,
-          machineName: m.name,
-          severity: 'warning' as const,
-          message: `High risk: RUL has fallen to ${m.rul.toFixed(0)} days. Schedule maintenance soon.`,
-          timestamp: new Date().toISOString(),
-          acknowledged: acknowledgedAlertIds.has(`alert-warning-${m.id}`)
-        }
-      }
-      return null
-    }).filter(a => a !== null && !hiddenAlertIds.has(a.id)) as Alert[]
-  }, [activeMachines, hiddenAlertIds, acknowledgedAlertIds])
+        return null;
+      })
+      .filter((a) => a !== null && !hiddenAlertIds.has(a.id)) as Alert[];
+  }, [activeMachines, hiddenAlertIds, acknowledgedAlertIds]);
 
   const criticalAlerts = useMemo(
-    () => alerts.filter(a => a.severity === 'critical' && !a.acknowledged),
-    [alerts]
-  )
+    () => alerts.filter((a) => a.severity === "critical" && !a.acknowledged),
+    [alerts],
+  );
 
   // Persist layout changes
   useEffect(() => {
-    if (!isHydrated.current) return
+    if (!isHydrated.current) return;
     try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(machines))
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(machines));
     } catch { }
-  }, [machines])
+  }, [machines]);
 
   const handleAcknowledgeAlert = (id: string) => {
-    setAcknowledgedAlertIds(prev => new Set(prev).add(id))
-  }
+    setAcknowledgedAlertIds((prev) => new Set(prev).add(id));
+  };
 
   const handleDismissAlert = (id: string) => {
-    setHiddenAlertIds(prev => new Set(prev).add(id))
-  }
+    setHiddenAlertIds((prev) => new Set(prev).add(id));
+  };
 
   const handleSelectMachine = (id: string) => {
-    setSelectedMachineId(id)
-    setSelectedComponent(null)
-    setActiveTab('diagnostics')
-  }
+    setSelectedMachineId(id);
+    setSelectedComponent(null);
+    setActiveTab("diagnostics");
+  };
 
   const handleBackToDashboard = () => {
-    setSelectedMachineId(null)
-    setSelectedComponent(null)
-  }
+    setSelectedMachineId(null);
+    setSelectedComponent(null);
+  };
 
   const handleAddMachine = useCallback((machine: Machine) => {
-    setMachines(prev => [...prev, machine])
-  }, [])
+    setMachines((prev) => [...prev, machine]);
+  }, []);
 
-  const handleUpdateMachinePosition = useCallback((id: string, location: { x: number; y: number }) => {
-    setMachines(prev => prev.map(m => m.id === id ? { ...m, location } : m))
-  }, [])
+  const handleUpdateMachinePosition = useCallback(
+    (id: string, location: { x: number; y: number }) => {
+      setMachines((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, location } : m)),
+      );
+    },
+    [],
+  );
 
-  const handleRemoveMachine = useCallback((id: string) => {
-    setMachines(prev => prev.filter(m => m.id !== id))
-    if (selectedMachineId === id) {
-      setSelectedMachineId(null)
-      setSelectedComponent(null)
-    }
-  }, [selectedMachineId])
+  const handleRemoveMachine = useCallback(
+    (id: string) => {
+      setMachines((prev) => prev.filter((m) => m.id !== id));
+      if (selectedMachineId === id) {
+        setSelectedMachineId(null);
+        setSelectedComponent(null);
+      }
+    },
+    [selectedMachineId],
+  );
 
-  const handleScheduleMaintenance = useCallback((
-    machineId: string,
-    date: string,
-    technician: string,
-    type: string,
-    notes: string
-  ) => {
-    setMachines(prev => prev.map(m =>
-      m.id === machineId ? { ...m, nextScheduledMaintenance: date } : m
-    ))
-  }, [])
+  const handleScheduleMaintenance = useCallback(
+    (
+      machineId: string,
+      date: string,
+      technician: string,
+      type: string,
+      notes: string,
+    ) => {
+      setMachines((prev) =>
+        prev.map((m) =>
+          m.id === machineId ? { ...m, nextScheduledMaintenance: date } : m,
+        ),
+      );
+    },
+    [],
+  );
 
   const handleFineTuneComplete = useCallback((machineId: string) => {
     const clearStoredEntry = (storageKey: string) => {
       try {
-        const raw = localStorage.getItem(storageKey)
-        if (!raw) return
-        const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') {
-          delete parsed[machineId]
-          localStorage.setItem(storageKey, JSON.stringify(parsed))
+        const raw = localStorage.getItem(storageKey);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          delete parsed[machineId];
+          localStorage.setItem(storageKey, JSON.stringify(parsed));
         }
       } catch { }
-    }
+    };
 
-    clearStoredEntry('enginePredictions')
-    clearStoredEntry('engineExplainability')
-    clearStoredEntry('engineChangepoints')
-    setPredictionRefreshToken(token => token + 1)
-    window.dispatchEvent(new Event('predictionsUpdated'))
-  }, [])
+    clearStoredEntry("enginePredictions");
+    clearStoredEntry("engineExplainability");
+    clearStoredEntry("engineChangepoints");
+    setPredictionRefreshToken((token) => token + 1);
+    window.dispatchEvent(new Event("predictionsUpdated"));
+  }, []);
 
   // Alert → Maintenance Tab navigation
-  const [focusedMachineId, setFocusedMachineId] = useState<string | null>(null)
-  const [focusedAlertMessage, setFocusedAlertMessage] = useState<string | null>(null)
+  const [focusedMachineId, setFocusedMachineId] = useState<string | null>(null);
+  const [focusedAlertMessage, setFocusedAlertMessage] = useState<string | null>(
+    null,
+  );
 
-  const handleAlertClick = useCallback((machineId: string) => {
-    // Find the alert message for display in the banner
-    const alert = alerts.find(a => a.machineId === machineId && !a.acknowledged)
-    setFocusedMachineId(machineId)
-    setFocusedAlertMessage(alert?.message ?? null)
-    setDashboardTab('maintenance')
-    // Scroll to top so the maintenance tab is visible before the card scrollIntoView fires
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [alerts])
+  const handleAlertClick = useCallback(
+    (machineId: string) => {
+      // Find the alert message for display in the banner
+      const alert = alerts.find(
+        (a) => a.machineId === machineId && !a.acknowledged,
+      );
+      setFocusedMachineId(machineId);
+      setFocusedAlertMessage(alert?.message ?? null);
+      setDashboardTab("maintenance");
+      // Scroll to top so the maintenance tab is visible before the card scrollIntoView fires
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [alerts],
+  );
 
   // Neo Intent handler for maintenance
   useEffect(() => {
-    if (activeUIModules.includes('MAINTENANCE_PANEL') && activeContextData) {
-      setDashboardTab('maintenance');
+    if (activeUIModules.includes("MAINTENANCE_PANEL") && activeContextData) {
+      setDashboardTab("maintenance");
       setFocusedMachineId(activeContextData.id);
       setHUDVisible(false);
       setChatOpen(false);
 
+
       // Allow the layout to shift before firing the event to auto-schedule
       setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('neo-auto-schedule', { detail: { machineId: activeContextData.id } }));
+        window.dispatchEvent(
+          new CustomEvent("neo-auto-schedule", {
+            detail: { machineId: activeContextData.id },
+          }),
+        );
       }, 500);
 
+
       // Clear the intent so it doesn't fire again
-      setActiveUIModules(['SYSTEM_OVERVIEW']);
+      setActiveUIModules(["SYSTEM_OVERVIEW"]);
     }
-  }, [activeUIModules, activeContextData, setHUDVisible, setChatOpen, setActiveUIModules]);
+  }, [
+    activeUIModules,
+    activeContextData,
+    setHUDVisible,
+    setChatOpen,
+    setActiveUIModules,
+  ]);
 
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className={cn(
-        "sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 transition-opacity duration-500",
-        isHUDVisible && "opacity-0 pointer-events-none"
-      )}>
+      <header
+        className={cn(
+          "sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 transition-opacity duration-500",
+          isHUDVisible && "opacity-0 pointer-events-none",
+        )}
+      >
         <div className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-4">
             {selectedMachine && (
@@ -291,12 +342,21 @@ export default function DigitalTwinDashboard() {
                   alt="AntiFault Logo"
                   width={32}
                   height={32}
+                <Image
+                  src="/transparent-logo.png"
+                  alt="AntiFault Logo"
+                  width={32}
+                  height={32}
                   className="object-contain"
                 />
               </div>
               <div>
                 <h1 className="font-semibold text-lg">
-                  {selectedMachine ? selectedMachine.name : <span className="text-primary font-bold">AntiFault</span>}
+                  {selectedMachine ? (
+                    selectedMachine.name
+                  ) : (
+                    <span className="text-primary font-bold">AntiFault</span>
+                  )}
                 </h1>
                 <p className="text-xs text-muted-foreground">
                   {selectedMachine
@@ -348,8 +408,8 @@ export default function DigitalTwinDashboard() {
                   className={cn(
                     "flex items-center gap-2 px-3 h-10 rounded-xl border bg-card shadow-sm hover:bg-muted/50 transition-colors",
                     globalHealth >= 80 ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400" :
-                    globalHealth >= 50 ? "border-amber-500/30 text-amber-600 dark:text-amber-400" :
-                    "border-red-500/30 text-red-600 dark:text-red-400"
+                      globalHealth >= 50 ? "border-amber-500/30 text-amber-600 dark:text-amber-400" :
+                        "border-red-500/30 text-red-600 dark:text-red-400"
                   )}
                 >
                   <Activity className="w-4 h-4" />
@@ -358,13 +418,13 @@ export default function DigitalTwinDashboard() {
               </PopoverTrigger>
               <PopoverContent className="w-64 p-4" align="end">
                 <h4 className="font-semibold text-sm mb-3 text-foreground">System Health</h4>
-                
+
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-xs text-muted-foreground">Overall Score</span>
                   <span className={cn(
                     "text-xl font-bold",
                     globalHealth >= 80 ? "text-emerald-500" :
-                    globalHealth >= 50 ? "text-amber-500" : "text-red-500"
+                      globalHealth >= 50 ? "text-amber-500" : "text-red-500"
                   )}>
                     {Math.round(globalHealth)}%
                   </span>
@@ -390,7 +450,7 @@ export default function DigitalTwinDashboard() {
                     <span className="font-medium">{activeMachines.filter(m => m.status === 'critical').length}</span>
                   </div>
                 </div>
-                
+
                 {activeMachines.filter(m => m.status === 'critical').length > 0 && (
                   <div className="mt-4 pt-3 border-t border-border/50">
                     <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
@@ -429,15 +489,17 @@ export default function DigitalTwinDashboard() {
                   size="sm"
                   className={cn(
                     'relative w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 border shadow-sm',
-                    criticalAlerts.length > 0 
-                      ? 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/20' 
+                    criticalAlerts.length > 0
+                      ? 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/20'
                       : 'bg-muted/50 border-border text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                   )}
                 >
-                  <Bell className={cn(
-                    'w-5 h-5',
-                    criticalAlerts.length > 0 && 'animate-pulse'
-                  )} />
+                  <Bell
+                    className={cn(
+                      "w-5 h-5",
+                      criticalAlerts.length > 0 && "animate-pulse",
+                    )}
+                  />
                   {alerts.length > 0 && (
                     <span className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-destructive-foreground rounded-full text-[10px] flex items-center justify-center border-2 border-background font-bold">
                       {alerts.length}
@@ -459,6 +521,7 @@ export default function DigitalTwinDashboard() {
                 </div>
                 <div className="max-h-[400px] p-2">
                   <AlertPanel
+                    <AlertPanel
                     alerts={alerts}
                     onAcknowledge={handleAcknowledgeAlert}
                     onDismiss={handleDismissAlert}
@@ -468,8 +531,14 @@ export default function DigitalTwinDashboard() {
                 {alerts.length > 0 && (
                   <div className="p-2 border-t border-border bg-muted/10 text-center">
                     <button
+                      <button
                       onClick={() => {
-                        setAcknowledgedAlertIds(new Set([...acknowledgedAlertIds, ...alerts.map(a => a.id)]))
+                        setAcknowledgedAlertIds(
+                          new Set([
+                            ...acknowledgedAlertIds,
+                            ...alerts.map((a) => a.id),
+                          ]),
+                        );
                       }}
                       className="text-xs text-muted-foreground hover:text-primary transition-colors font-medium"
                     >
@@ -479,8 +548,6 @@ export default function DigitalTwinDashboard() {
                 )}
               </PopoverContent>
             </Popover>
-
-
 
             <Button variant="ghost" size="sm">
               <Settings className="w-5 h-5" />
@@ -521,7 +588,11 @@ export default function DigitalTwinDashboard() {
                   <CardContent>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       <button
-                        onClick={() => setStatFilter(statFilter === 'optimal' ? null : 'optimal')}
+                        onClick={() =>
+                          setStatFilter(
+                            statFilter === "optimal" ? null : "optimal",
+                          )
+                        }
                         className={cn(
                           "bg-success/15 dark:bg-success/10 rounded-lg p-4 text-center transition-all hover:bg-success/25 dark:hover:bg-success/20 hover:scale-105",
                           statFilter === 'optimal' && "ring-2 ring-success ring-offset-2 ring-offset-background"
@@ -530,10 +601,16 @@ export default function DigitalTwinDashboard() {
                         <div className="text-3xl font-bold text-success dark:text-success">
                           {activeMachines.filter(m => m.status === 'optimal').length}
                         </div>
-                        <div className="text-sm text-muted-foreground">Optimal</div>
+                        <div className="text-sm text-muted-foreground">
+                          Optimal
+                        </div>
                       </button>
                       <button
-                        onClick={() => setStatFilter(statFilter === 'impaired' ? null : 'impaired')}
+                        onClick={() =>
+                          setStatFilter(
+                            statFilter === "impaired" ? null : "impaired",
+                          )
+                        }
                         className={cn(
                           "bg-warning/15 dark:bg-warning/10 rounded-lg p-4 text-center transition-all hover:bg-warning/25 dark:hover:bg-warning/20 hover:scale-105",
                           statFilter === 'impaired' && "ring-2 ring-warning ring-offset-2 ring-offset-background"
@@ -542,10 +619,16 @@ export default function DigitalTwinDashboard() {
                         <div className="text-3xl font-bold text-warning dark:text-warning">
                           {activeMachines.filter(m => m.status === 'impaired').length}
                         </div>
-                        <div className="text-sm text-muted-foreground">Impaired</div>
+                        <div className="text-sm text-muted-foreground">
+                          Impaired
+                        </div>
                       </button>
                       <button
-                        onClick={() => setStatFilter(statFilter === 'critical' ? null : 'critical')}
+                        onClick={() =>
+                          setStatFilter(
+                            statFilter === "critical" ? null : "critical",
+                          )
+                        }
                         className={cn(
                           "bg-destructive/15 dark:bg-destructive/10 rounded-lg p-4 text-center transition-all hover:bg-destructive/25 dark:hover:bg-destructive/20 hover:scale-105",
                           statFilter === 'critical' && "ring-2 ring-destructive ring-offset-2 ring-offset-background"
@@ -554,10 +637,16 @@ export default function DigitalTwinDashboard() {
                         <div className="text-3xl font-bold text-destructive dark:text-destructive">
                           {activeMachines.filter(m => m.status === 'critical').length}
                         </div>
-                        <div className="text-sm text-muted-foreground">Critical</div>
+                        <div className="text-sm text-muted-foreground">
+                          Critical
+                        </div>
                       </button>
                       <button
-                        onClick={() => setStatFilter(statFilter === 'scheduled' ? null : 'scheduled')}
+                        onClick={() =>
+                          setStatFilter(
+                            statFilter === "scheduled" ? null : "scheduled",
+                          )
+                        }
                         className={cn(
                           "bg-primary/15 dark:bg-primary/10 rounded-lg p-4 text-center transition-all hover:bg-primary/25 dark:hover:bg-primary/20 hover:scale-105",
                           statFilter === 'scheduled' && "ring-2 ring-primary ring-offset-2 ring-offset-background"
@@ -566,7 +655,9 @@ export default function DigitalTwinDashboard() {
                         <div className="text-3xl font-bold text-primary dark:text-primary">
                           {tasks.filter(t => t.status === 'scheduled').length}
                         </div>
-                        <div className="text-sm text-muted-foreground">Scheduled</div>
+                        <div className="text-sm text-muted-foreground">
+                          Scheduled
+                        </div>
                       </button>
                     </div>
 
@@ -575,60 +666,92 @@ export default function DigitalTwinDashboard() {
                       <div className="mt-4 border-t border-border pt-4 animate-in fade-in-50 slide-in-from-top-2 duration-200">
                         <div className="flex items-center justify-between mb-3">
                           <h4 className="text-sm font-medium capitalize">
-                            {statFilter === 'scheduled' ? 'Scheduled Maintenance' : `${statFilter} Machines`}
+                            {statFilter === "scheduled"
+                              ? "Scheduled Maintenance"
+                              : `${statFilter} Machines`}
                           </h4>
-                          <Button variant="ghost" size="sm" onClick={() => setStatFilter(null)}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setStatFilter(null)}
+                          >
                             <X className="w-4 h-4" />
                           </Button>
                         </div>
                         <div className="space-y-2 max-h-[200px] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                          {statFilter === 'scheduled' ? (
-                            tasks.filter(t => t.status === 'scheduled').map(task => {
-                              const machine = activeMachines.find(m => m.id === task.machineId)
-                              return (
+                          {statFilter === "scheduled"
+                            ? tasks
+                              .filter((t) => t.status === "scheduled")
+                              .map((task) => {
+                                const machine = activeMachines.find(
+                                  (m) => m.id === task.machineId,
+                                );
+                                return (
+                                  <button
+                                    key={task.id}
+                                    onClick={() =>
+                                      handleSelectMachine(task.machineId)
+                                    }
+                                    className="w-full flex items-center justify-between p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors text-left"
+                                  >
+                                    <div>
+                                      <div className="font-medium text-sm">
+                                        {machine?.name || "Unknown"}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground capitalize">
+                                        {task.type}
+                                      </div>
+                                    </div>
+                                    <div className="text-right">
+                                      <div className="text-xs text-primary font-medium">
+                                        {new Date(
+                                          task.scheduledDate,
+                                        ).toLocaleDateString()}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">
+                                        {task.estimatedDuration}
+                                      </div>
+                                    </div>
+                                  </button>
+                                );
+                              })
+                            : activeMachines
+                              .filter((m) => m.status === statFilter)
+                              .map((machine) => (
                                 <button
-                                  key={task.id}
-                                  onClick={() => handleSelectMachine(task.machineId)}
+                                  key={machine.id}
+                                  onClick={() =>
+                                    handleSelectMachine(machine.id)
+                                  }
                                   className="w-full flex items-center justify-between p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors text-left"
                                 >
                                   <div>
-                                    <div className="font-medium text-sm">{machine?.name || 'Unknown'}</div>
-                                    <div className="text-xs text-muted-foreground capitalize">{task.type}</div>
+                                    <div className="font-medium text-sm">
+                                      {machine.name}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {machine.type}
+                                    </div>
                                   </div>
                                   <div className="text-right">
-                                    <div className="text-xs text-primary font-medium">
-                                      {new Date(task.scheduledDate).toLocaleDateString()}
+                                    <div
+                                      className={cn(
+                                        "text-sm font-bold",
+                                        machine.rul < 30
+                                          ? "text-destructive"
+                                          : machine.rul <= 80
+                                            ? "text-warning"
+                                            : "text-success",
+                                      )}
+                                    >
+                                      {machine.rul}d RUL
                                     </div>
-                                    <div className="text-xs text-muted-foreground">{task.estimatedDuration}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      Health: {machine.healthIndex}%
+                                    </div>
                                   </div>
                                 </button>
-                              )
-                            })
-                          ) : (
-                            activeMachines.filter(m => m.status === statFilter).map(machine => (
-                              <button
-                                key={machine.id}
-                                onClick={() => handleSelectMachine(machine.id)}
-                                className="w-full flex items-center justify-between p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors text-left"
-                              >
-                                <div>
-                                  <div className="font-medium text-sm">{machine.name}</div>
-                                  <div className="text-xs text-muted-foreground">{machine.type}</div>
-                                </div>
-                                <div className="text-right">
-                                  <div className={cn(
-                                    "text-sm font-bold",
-                                    machine.rul < 30 ? 'text-destructive' :
-                                      machine.rul <= 80 ? 'text-warning' :
-                                        'text-success'
-                                  )}>
-                                    {machine.rul}d RUL
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">Health: {machine.healthIndex}%</div>
-                                </div>
-                              </button>
-                            ))
-                          )}
+                              ))}
                         </div>
                       </div>
                     )}
@@ -641,7 +764,7 @@ export default function DigitalTwinDashboard() {
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex p-1 rounded-xl bg-muted/50 border border-border gap-1">
                     <button
-                      onClick={() => setDashboardTab('fleet')}
+                      onClick={() => setDashboardTab("fleet")}
                       className={cn(
                         'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
                         dashboardTab === 'fleet'
@@ -653,7 +776,7 @@ export default function DigitalTwinDashboard() {
                       Fleet Overview
                     </button>
                     <button
-                      onClick={() => setDashboardTab('ttf')}
+                      onClick={() => setDashboardTab("ttf")}
                       className={cn(
                         'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
                         dashboardTab === 'ttf'
@@ -665,7 +788,7 @@ export default function DigitalTwinDashboard() {
                       Time to Failure
                     </button>
                     <button
-                      onClick={() => setDashboardTab('maintenance')}
+                      onClick={() => setDashboardTab("maintenance")}
                       className={cn(
                         'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
                         dashboardTab === 'maintenance'
@@ -684,7 +807,9 @@ export default function DigitalTwinDashboard() {
                     {/* 3D Fleet View */}
                     <Card>
                       <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium">3D Factory Floor</CardTitle>
+                        <CardTitle className="text-sm font-medium">
+                          3D Factory Floor
+                        </CardTitle>
                       </CardHeader>
                       <CardContent>
                         <MachineViewer3D
@@ -726,10 +851,16 @@ export default function DigitalTwinDashboard() {
                     {/* RUL Overview */}
                     <Card className="lg:col-span-2">
                       <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium">Fleet RUL Timeline</CardTitle>
+                        <CardTitle className="text-sm font-medium">
+                          Fleet RUL Timeline
+                        </CardTitle>
                       </CardHeader>
                       <CardContent>
-                        <RULGraph machine={null} machines={activeMachines} isFleetView={true} />
+                        <RULGraph
+                          machine={null}
+                          machines={activeMachines}
+                          isFleetView={true}
+                        />
                       </CardContent>
                     </Card>
                   </div>
@@ -737,7 +868,11 @@ export default function DigitalTwinDashboard() {
                   {/* Simulation Panel for Fleet */}
                   <Card className="mt-6">
                     <CardContent>
-                      <SimulationPanel machine={null} machines={activeMachines} isFleetView={true} />
+                      <SimulationPanel
+                        machine={null}
+                        machines={activeMachines}
+                        isFleetView={true}
+                      />
                     </CardContent>
                   </Card>
                 </TabsContent>
@@ -765,6 +900,9 @@ export default function DigitalTwinDashboard() {
                       onComponentSelect={setSelectedComponent}
                       selectedComponent={selectedComponent}
                       refreshToken={predictionRefreshToken}
+                      onModuleFocus={(info) => { setFocusedModuleInfo(info); if (!info) setSelectedMeshName(null); }}
+                      onMeshSelect={setSelectedMeshName}
+                      selectedMeshName={selectedMeshName}
                     />
                   </CardContent>
                 </Card>
@@ -774,7 +912,11 @@ export default function DigitalTwinDashboard() {
                   <Card>
                     <CardContent className="pt-6">
                       <div className="flex items-center justify-center">
-                        <HealthGauge value={selectedMachine.healthIndex} label="Machine Health" size="lg" />
+                        <HealthGauge
+                          value={selectedMachine.healthIndex}
+                          label="Machine Health"
+                          size="lg"
+                        />
                       </div>
                     </CardContent>
                   </Card>
@@ -783,56 +925,131 @@ export default function DigitalTwinDashboard() {
                     <CardContent className="pt-4">
                       <div className="grid grid-cols-2 gap-4 text-center">
                         <div>
-                          <div className={cn(
-                            'text-2xl font-bold font-mono',
-                            selectedMachine.rul < 30 ? 'text-destructive' :
-                              selectedMachine.rul <= 80 ? 'text-warning' :
-                                'text-success'
-                          )}>
+                          <div
+                            className={cn(
+                              "text-2xl font-bold font-mono",
+                              selectedMachine.rul < 30
+                                ? "text-destructive"
+                                : selectedMachine.rul <= 80
+                                  ? "text-warning"
+                                  : "text-success",
+                            )}
+                          >
                             {selectedMachine.rul}
                           </div>
-                          <div className="text-xs text-muted-foreground">Days RUL</div>
+                          <div className="text-xs text-muted-foreground">
+                            Days RUL
+                          </div>
                         </div>
                         <div>
                           <div className="text-2xl font-bold font-mono text-foreground">
-                            ${(selectedMachine.financialImpactPerDay / 1000).toFixed(1)}K
+                            $
+                            {(
+                              selectedMachine.financialImpactPerDay / 1000
+                            ).toFixed(1)}
+                            K
                           </div>
-                          <div className="text-xs text-muted-foreground">Daily Impact</div>
+                          <div className="text-xs text-muted-foreground">
+                            Daily Impact
+                          </div>
                         </div>
                       </div>
                     </CardContent>
                   </Card>
 
+                  {focusedModuleInfo && (
+                    <Card className="border-primary/50">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm">
+                          {focusedModuleInfo.label} — Parts
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-1">
+                          {focusedModuleInfo.meshNames.map((name) => (
+                            <div
+                              key={name}
+                              onClick={() => setSelectedMeshName(selectedMeshName === name ? null : name)}
+                              className={`text-xs font-mono py-0.5 px-2 rounded transition-colors cursor-pointer ${selectedMeshName === name
+                                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/50 font-semibold"
+                                  : "text-muted-foreground bg-muted hover:bg-muted/70"
+                                }`}
+                            >
+                              {name}
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
                   {selectedComponent && (
                     <Card className="border-primary">
                       <CardHeader className="pb-2">
-                        <CardTitle className="text-sm">Selected Component</CardTitle>
+                        <CardTitle className="text-sm">
+                          Selected Component
+                        </CardTitle>
                       </CardHeader>
                       <CardContent>
                         <div className="space-y-2">
-                          <div className="font-medium">{selectedComponent.name}</div>
+                          <div className="font-medium">
+                            {selectedComponent.name}
+                          </div>
                           <div className="flex items-center justify-between text-sm">
-                            <span className="text-muted-foreground">Health</span>
-                            <span className={cn(
-                              'font-bold',
-                              selectedComponent.health >= 80 ? 'text-success' :
-                                selectedComponent.health >= 60 ? 'text-warning' :
-                                  'text-destructive'
-                            )}>
+                            <span className="text-muted-foreground">
+                              Health
+                            </span>
+                            <span
+                              className={cn(
+                                "font-bold",
+                                selectedComponent.health >= 80
+                                  ? "text-success"
+                                  : selectedComponent.health >= 60
+                                    ? "text-warning"
+                                    : "text-destructive",
+                              )}
+                            >
                               {selectedComponent.health}%
                             </span>
                           </div>
                           <div className="flex items-center justify-between text-sm">
-                            <span className="text-muted-foreground">Status</span>
-                            <span className={cn(
-                              'capitalize',
-                              selectedComponent.status === 'healthy' ? 'text-success' :
-                                selectedComponent.status === 'degraded' ? 'text-warning' :
-                                  'text-destructive'
-                            )}>
+                            <span className="text-muted-foreground">
+                              Status
+                            </span>
+                            <span
+                              className={cn(
+                                "capitalize",
+                                selectedComponent.status === "healthy"
+                                  ? "text-success"
+                                  : selectedComponent.status === "degraded"
+                                    ? "text-warning"
+                                    : "text-destructive",
+                              )}
+                            >
                               {selectedComponent.status}
                             </span>
                           </div>
+                          {focusedModuleInfo && (
+                            <div className="mt-4 pt-4 border-t border-border">
+                              <div className="text-xs font-semibold text-muted-foreground mb-2">
+                                Level 2 Components
+                              </div>
+                              <div className="space-y-1 max-h-[120px] overflow-y-auto">
+                                {focusedModuleInfo.meshNames.map((mesh) => (
+                                  <div
+                                    key={mesh}
+                                    onClick={() => setSelectedMeshName(selectedMeshName === mesh ? null : mesh)}
+                                    className={`text-xs p-1.5 rounded border transition-colors cursor-pointer ${selectedMeshName === mesh
+                                        ? "bg-blue-500/20 text-blue-400 border-blue-500/50 font-semibold"
+                                        : "text-foreground bg-muted/50 border-border/50 hover:bg-muted"
+                                      }`}
+                                  >
+                                    {mesh}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </CardContent>
                     </Card>
@@ -845,11 +1062,15 @@ export default function DigitalTwinDashboard() {
                 <TabsList className="grid grid-cols-5 w-full max-w-[760px]">
                   <TabsTrigger
                     value="diagnostics"
+                  <TabsTrigger
+                    value="diagnostics"
                     className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary"
                   >
                     <Activity className="w-4 h-4" />
                     <span className="hidden sm:inline">Diagnostics</span>
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="fine-tune"
                   <TabsTrigger
                     value="fine-tune"
                     className="gap-2 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300"
@@ -859,6 +1080,8 @@ export default function DigitalTwinDashboard() {
                   </TabsTrigger>
                   <TabsTrigger
                     value="maintenance"
+                  <TabsTrigger
+                    value="maintenance"
                     className="gap-2 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-500"
                   >
                     <Wrench className="w-4 h-4" />
@@ -866,11 +1089,15 @@ export default function DigitalTwinDashboard() {
                   </TabsTrigger>
                   <TabsTrigger
                     value="simulation"
+                  <TabsTrigger
+                    value="simulation"
                     className="gap-2 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-500"
                   >
                     <Play className="w-4 h-4" />
                     <span className="hidden sm:inline">Simulation</span>
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="upgrades"
                   <TabsTrigger
                     value="upgrades"
                     className="gap-2 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-400"
@@ -884,7 +1111,9 @@ export default function DigitalTwinDashboard() {
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <Card>
                       <CardHeader>
-                        <CardTitle className="text-sm">Live Sensor Feed</CardTitle>
+                        <CardTitle className="text-sm">
+                          Live Sensor Feed
+                        </CardTitle>
                       </CardHeader>
                       <CardContent>
                         <SensorCharts machineId={selectedMachine.id} />
@@ -902,9 +1131,7 @@ export default function DigitalTwinDashboard() {
 
                     <Card className="lg:col-span-2">
                       <CardContent className="pt-6">
-                        <XAIPanel
-                          machineId={selectedMachine.id}
-                        />
+                        <XAIPanel machineId={selectedMachine.id} />
                       </CardContent>
                     </Card>
                   </div>
@@ -926,9 +1153,9 @@ export default function DigitalTwinDashboard() {
                         selectedComponent={selectedComponent}
                         tasks={tasks}
                         onScheduleMaintenance={() => {
-                          setFocusedMachineId(selectedMachine.id)
-                          setSelectedMachineId(null)
-                          setDashboardTab('maintenance')
+                          setFocusedMachineId(selectedMachine.id);
+                          setSelectedMachineId(null);
+                          setDashboardTab("maintenance");
                         }}
                       />
                     </CardContent>
@@ -966,5 +1193,5 @@ export default function DigitalTwinDashboard() {
         />
       </div>
     </div>
-  )
+  );
 }
