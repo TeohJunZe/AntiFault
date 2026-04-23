@@ -9,9 +9,9 @@ import {
   AreaChart,
 } from 'recharts'
 
-import mockRul10 from '../backend/mock_data/mock_payload_rul_10.json'
-import mockRul40 from '../backend/mock_data/mock_payload_rul_40.json'
-import mockRul100 from '../backend/mock_data/mock_payload_rul_100.json'
+import mockRul10 from '../lib/mock_data/mock_payload_rul_10.json'
+import mockRul40 from '../lib/mock_data/mock_payload_rul_40.json'
+import mockRul100 from '../lib/mock_data/mock_payload_rul_100.json'
 
 interface SensorChartsProps {
   machineId: string
