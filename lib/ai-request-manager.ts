@@ -221,22 +221,22 @@ export async function streamNeoRequest(
         onToken(token);
     };
 
-    // Priority 1: llama2 (works locally if downloaded)
+    // Priority 1: llama3.2 (Ollama cloud)
     try {
-        console.log("[AI Manager] Streaming llama2...");
-        await callOllamaStream("llama2", prompt, handleToken);
-        console.log("[AI Manager] ✅ llama2 stream finished");
+        console.log("[AI Manager] Streaming llama3.2...");
+        await callOllamaStream("llama3.2", prompt, handleToken);
+        console.log("[AI Manager] ✅ llama3.2 stream finished");
     } catch (err: any) {
-        console.warn("[AI Manager] llama2 stream failed:", err.message);
+        console.warn("[AI Manager] llama3.2 stream failed:", err.message);
         
-        // Priority 2: gemma3:4b (works on Ollama Cloud)
+        // Priority 2: llama3.1 (fallback on Ollama cloud)
         try {
-            console.log("[AI Manager] Streaming gemma3:4b (fallback)...");
+            console.log("[AI Manager] Streaming llama3.1 (fallback)...");
             fullResponse = ""; // reset accumulated text
-            await callOllamaStream("gemma3:4b", prompt, handleToken);
-            console.log("[AI Manager] ✅ gemma3:4b stream finished");
+            await callOllamaStream("llama3.1", prompt, handleToken);
+            console.log("[AI Manager] ✅ llama3.1 stream finished");
         } catch (err2: any) {
-            console.warn("[AI Manager] gemma3:4b stream failed:", err2.message);
+            console.warn("[AI Manager] llama3.1 stream failed:", err2.message);
             // Last resort: show exact error
             const fallbackMsg = `[Connection Error] Could not reach the AI models. Details: ${err2.message}. Please verify your API key and model availability.`;
             
