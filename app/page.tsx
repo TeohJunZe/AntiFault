@@ -342,11 +342,6 @@ export default function DigitalTwinDashboard() {
                   alt="AntiFault Logo"
                   width={32}
                   height={32}
-                <Image
-                  src="/transparent-logo.png"
-                  alt="AntiFault Logo"
-                  width={32}
-                  height={32}
                   className="object-contain"
                 />
               </div>
@@ -521,7 +516,6 @@ export default function DigitalTwinDashboard() {
                 </div>
                 <div className="max-h-[400px] p-2">
                   <AlertPanel
-                    <AlertPanel
                     alerts={alerts}
                     onAcknowledge={handleAcknowledgeAlert}
                     onDismiss={handleDismissAlert}
@@ -531,7 +525,6 @@ export default function DigitalTwinDashboard() {
                 {alerts.length > 0 && (
                   <div className="p-2 border-t border-border bg-muted/10 text-center">
                     <button
-                      <button
                       onClick={() => {
                         setAcknowledgedAlertIds(
                           new Set([
@@ -1062,15 +1055,11 @@ export default function DigitalTwinDashboard() {
                 <TabsList className="grid grid-cols-5 w-full max-w-[760px]">
                   <TabsTrigger
                     value="diagnostics"
-                  <TabsTrigger
-                    value="diagnostics"
                     className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary"
                   >
                     <Activity className="w-4 h-4" />
                     <span className="hidden sm:inline">Diagnostics</span>
                   </TabsTrigger>
-                  <TabsTrigger
-                    value="fine-tune"
                   <TabsTrigger
                     value="fine-tune"
                     className="gap-2 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300"
@@ -1080,8 +1069,6 @@ export default function DigitalTwinDashboard() {
                   </TabsTrigger>
                   <TabsTrigger
                     value="maintenance"
-                  <TabsTrigger
-                    value="maintenance"
                     className="gap-2 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-500"
                   >
                     <Wrench className="w-4 h-4" />
@@ -1089,15 +1076,11 @@ export default function DigitalTwinDashboard() {
                   </TabsTrigger>
                   <TabsTrigger
                     value="simulation"
-                  <TabsTrigger
-                    value="simulation"
                     className="gap-2 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-500"
                   >
                     <Play className="w-4 h-4" />
                     <span className="hidden sm:inline">Simulation</span>
                   </TabsTrigger>
-                  <TabsTrigger
-                    value="upgrades"
                   <TabsTrigger
                     value="upgrades"
                     className="gap-2 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-400"

@@ -255,8 +255,7 @@ export function MachineViewer3D({
       > = {};
 
       for (const m of machinesToProcess) {
-        try {
-          let payload;
+        let payload;
           if (m.id === "machine-1" || m.id === "machine-4") payload = mockRul40;
           else if (m.id === "machine-2" || m.id === "machine-5")
             payload = mockRul100;
@@ -331,9 +330,28 @@ export function MachineViewer3D({
               };
             }
           } catch (error) {
-            console.error("Failed to fetch prediction for", m.id, error);
+            console.warn("Backend unavailable, using local fallback for", m.id);
+            // Local fallback logic
+            let fallbackRul = 90;
+            let fallbackStatus: Machine["status"] = "optimal";
+            
+            if (m.id === "machine-1" || m.id === "machine-4") {
+              fallbackRul = 40;
+              fallbackStatus = "impaired";
+            } else if (m.id === "machine-2" || m.id === "machine-5") {
+              fallbackRul = 100;
+              fallbackStatus = "optimal";
+            } else {
+              fallbackRul = 10;
+              fallbackStatus = "critical";
+            }
+            
+            newPredictions[m.id] = {
+              rul: fallbackRul,
+              status: fallbackStatus,
+            };
           }
-        }
+      } // Close the for loop
 
       if (Object.keys(newPredictions).length > 0) {
           const stored = localStorage.getItem("enginePredictions");
@@ -353,9 +371,10 @@ export function MachineViewer3D({
         if (Object.keys(newPredictions).length > 0) {
           setPredictions((prev) => ({ ...prev, ...newPredictions }));
         }
-      }
-      fetchPredictions();
-    }, [isFleetView, machines, machine, refreshToken]);
+    } // Close fetchPredictions function
+
+    fetchPredictions();
+  }, [isFleetView, machines, machine, refreshToken]);
 
   const handleAddMachine = () => {
     if (!newName.trim() || !onAddMachine) return;
