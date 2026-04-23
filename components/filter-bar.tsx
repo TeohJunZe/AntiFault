@@ -26,7 +26,7 @@ export function FilterBar({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-4 p-4 rounded-xl bg-card border border-border/50 shadow-sm">
-        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground dark:text-white uppercase tracking-wider">
           <SlidersHorizontal className="w-3.5 h-3.5" />
           Filters
         </div>
@@ -62,7 +62,7 @@ export function FilterBar({
 
         {/* Comparison Mode */}
         <div className="flex items-center gap-1.5">
-          <span className="text-xs text-muted-foreground">Compare</span>
+          <span className="text-xs text-muted-foreground dark:text-white">Compare</span>
           <div className="flex rounded-lg bg-muted/50 border border-border p-0.5 gap-0.5">
             {([
               { value: 'none', label: 'None' },

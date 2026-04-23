@@ -36,11 +36,12 @@ interface MachineViewer3DProps {
   onAddMachine?: (m: Machine) => void
   onUpdateMachinePosition?: (id: string, location: { x: number; y: number }) => void
   onRemoveMachine?: (id: string) => void
+  refreshToken?: number
 }
 
-export function MachineViewer3D({ 
-  machine, 
-  onComponentSelect, 
+export function MachineViewer3D({
+  machine,
+  onComponentSelect,
   selectedComponent,
   isFleetView = false,
   machines = [],
@@ -50,9 +51,10 @@ export function MachineViewer3D({
   onAddMachine,
   onUpdateMachinePosition,
   onRemoveMachine,
+  refreshToken = 0,
 }: MachineViewer3DProps) {
   const [isExploded, setIsExploded] = useState(false)
-  const [predictions, setPredictions] = useState<Record<string, {rul: number, status: Machine['status']}>>({})
+  const [predictions, setPredictions] = useState<Record<string, { rul: number, status: Machine['status'] }>>({})
   const [showAddForm, setShowAddForm] = useState(false)
   const [newName, setNewName] = useState('')
   const [newType, setNewType] = useState(MACHINE_TYPES[0])
@@ -65,10 +67,10 @@ export function MachineViewer3D({
   useEffect(() => {
     async function fetchPredictions() {
       const machinesToProcess = isFleetView ? machines : (machine ? [machine] : [])
-      
+
       try {
         const cached = localStorage.getItem('enginePredictions')
-        if (cached) {
+        if (cached && refreshToken === 0) {
           const parsed = JSON.parse(cached)
           const allCached = machinesToProcess.every(m => parsed[m.id] !== undefined)
           if (allCached) {
@@ -84,85 +86,92 @@ export function MachineViewer3D({
       }
 
       hasFetchedOnce.current = true;
-      const newPredictions: Record<string, {rul: number, status: Machine['status']}> = {}
-      const newChangepoints: Record<string, {isImpaired: boolean, impairedCycle: number | null, reason: string, totalFlights: number}> = {}
+      const newPredictions: Record<string, { rul: number, status: Machine['status'] }> = {}
+      const newChangepoints: Record<string, { isImpaired: boolean, impairedCycle: number | null, reason: string, totalFlights: number }> = {}
 
       for (const m of machinesToProcess) {
+        let payload;
+        if (m.id === 'machine-1' || m.id === 'machine-4') payload = mockRul40;
+        else if (m.id === 'machine-2' || m.id === 'machine-5') payload = mockRul100;
+        else payload = mockRul10;
+        payload = { ...payload, engine_id: m.id };
+
+        // Call /predict with a local fallback
         try {
-          let payload;
-          if (m.id === 'machine-1' || m.id === 'machine-4') payload = mockRul40;
-          else if (m.id === 'machine-2' || m.id === 'machine-5') payload = mockRul100;
-          else payload = mockRul10;
-          payload = { ...payload, engine_id: m.id };
+          const response = await fetch("http://localhost:8000/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
 
-          // Call /predict with a local fallback
-          try {
-            const response = await fetch("http://localhost:8000/predict", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload)
-            });
+          if (response.ok) {
+            const data = await response.json();
+            let newStatus: Machine['status'] = 'optimal';
+            if (data.predicted_rul < 30) newStatus = 'critical';
+            else if (data.predicted_rul <= 80) newStatus = 'impaired';
+            newPredictions[m.id] = { rul: data.predicted_rul, status: newStatus };
 
-            if (response.ok) {
-              const data = await response.json();
-              let newStatus: Machine['status'] = 'optimal';
-              if (data.predicted_rul < 30) newStatus = 'critical';
-              else if (data.predicted_rul <= 80) newStatus = 'impaired';
-              newPredictions[m.id] = { rul: data.predicted_rul, status: newStatus };
-
-              // Store explainability data for the XAI panel
-              if (data.top_sensors || data.attn_peak_cycle !== undefined) {
-                try {
-                  const stored = localStorage.getItem('engineExplainability')
-                  const existing = stored ? JSON.parse(stored) : {}
-                  existing[m.id] = {
-                    top_sensors: data.top_sensors || [],
-                    attn_peak_cycle: data.attn_peak_cycle ?? 0,
-                    status: data.status || '',
-                    predicted_rul: data.predicted_rul,
-                  }
-                  localStorage.setItem('engineExplainability', JSON.stringify(existing))
-                } catch (e) {
-                  console.warn('Failed to store explainability data', e)
+            // Store explainability data for the XAI panel
+            if (data.top_sensors || data.attn_peak_cycle !== undefined) {
+              try {
+                const stored = localStorage.getItem('engineExplainability')
+                const existing = stored ? JSON.parse(stored) : {}
+                existing[m.id] = {
+                  top_sensors: data.top_sensors || [],
+                  attn_peak_cycle: data.attn_peak_cycle ?? 0,
+                  status: data.status || '',
+                  predicted_rul: data.predicted_rul,
+                  risk_level: data.risk_level || '',
+                  recommendation: data.recommendation || '',
+                  confidence_note: data.confidence_note || '',
+                  report_text: data.report_text || '',
+                  uncertainty_sigma: data.uncertainty_sigma ?? 0,
+                  anomaly_z: data.anomaly_z ?? 0,
+                  suspected_components: data.suspected_components || [],
                 }
+                localStorage.setItem('engineExplainability', JSON.stringify(existing))
+              } catch (e) {
+                console.warn('Failed to store explainability data', e)
               }
-            } else {
-              throw new Error(`Server returned ${response.status}`);
             }
-          } catch (e) {
-            // Local fallback for prediction
-            console.warn(`[Backend Offline] Using local fallback for machine ${m.id}. Start backend/main.py for real AI predictions.`);
-            newPredictions[m.id] = { rul: m.rul, status: m.status };
-          }
-
-          // Call /detect_changepoint with a local fallback
-          try {
-            const cpResponse = await fetch("http://localhost:8000/detect_changepoint", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload)
-            });
-
-            if (cpResponse.ok) {
-              const cpData = await cpResponse.json();
-              newChangepoints[m.id] = {
-                isImpaired: cpData.is_impaired,
-                impairedCycle: cpData.impaired_flight_cycle,
-                reason: cpData.transition_reason,
-                totalFlights: cpData.total_flights_analyzed
-              };
-            }
-          } catch (e) {
-            // Local fallback for changepoint
-            newChangepoints[m.id] = {
-              isImpaired: m.status !== 'optimal',
-              impairedCycle: m.changePointDate ? 24 : null,
-              reason: m.status !== 'optimal' ? "Historical maintenance data analysis" : "Engine is healthy",
-              totalFlights: 40
-            };
+          } else {
+            throw new Error("Backend responded with error");
           }
         } catch (error) {
-          console.error("Error processing predictions for machine", m.id, error)
+          // Local fallback for prediction
+          newPredictions[m.id] = {
+            rul: m.rul,
+            status: m.status
+          };
+        }
+
+        // Call /detect_changepoint with a local fallback
+        try {
+          const cpResponse = await fetch("http://localhost:8000/detect_changepoint", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+
+          if (cpResponse.ok) {
+            const cpData = await cpResponse.json();
+            newChangepoints[m.id] = {
+              isImpaired: cpData.is_impaired,
+              impairedCycle: cpData.impaired_flight_cycle,
+              reason: cpData.transition_reason,
+              totalFlights: cpData.total_flights_analyzed
+            };
+          } else {
+            throw new Error("Backend responded with error");
+          }
+        } catch (e) {
+          // Local fallback for changepoint
+          newChangepoints[m.id] = {
+            isImpaired: m.status !== 'optimal',
+            impairedCycle: m.changePointDate ? 24 : null,
+            reason: m.status !== 'optimal' ? "Historical maintenance data analysis" : "Engine is healthy",
+            totalFlights: 40
+          };
         }
       }
 
@@ -186,7 +195,7 @@ export function MachineViewer3D({
       }
     }
     fetchPredictions()
-  }, [isFleetView, machines, machine])
+  }, [isFleetView, machines, machine, refreshToken])
 
   const handleAddMachine = () => {
     if (!newName.trim() || !onAddMachine) return
@@ -313,7 +322,7 @@ export function MachineViewer3D({
           <ambientLight intensity={0.4} />
           <pointLight position={[10, 10, 10]} intensity={0.8} />
           <pointLight position={[-10, -10, -10]} intensity={0.3} />
-          
+
           <FleetModel
             machines={machines}
             onMachineSelect={onMachineSelect}
@@ -323,7 +332,7 @@ export function MachineViewer3D({
             onRemoveMachine={onRemoveMachine}
             orbitRef={orbitRef}
           />
-          
+
           <OrbitControls
             ref={orbitRef}
             enablePan={true}
@@ -333,7 +342,7 @@ export function MachineViewer3D({
             maxDistance={20}
           />
           <Environment preset="warehouse" />
-          
+
           {/* Floor grid */}
           <gridHelper args={[20, 20, '#334155', '#1e293b']} position={[0, -0.5, 0]} />
 
@@ -388,7 +397,7 @@ export function MachineViewer3D({
           px-3 py-1.5 rounded-full text-xs font-medium
           ${((predictions || {})[machine.id]?.status || machine.status) === 'optimal' ? 'bg-success/20 text-success' :
             ((predictions || {})[machine.id]?.status || machine.status) === 'impaired' ? 'bg-warning/20 text-warning' :
-            'bg-destructive/20 text-destructive animate-pulse'}
+              'bg-destructive/20 text-destructive animate-pulse'}
         `}>
           {((predictions || {})[machine.id]?.status || machine.status).toUpperCase()} - RUL: {(predictions || {})[machine.id]?.rul ?? machine.rul} Days
         </div>
@@ -398,7 +407,7 @@ export function MachineViewer3D({
         <ambientLight intensity={0.4} />
         <pointLight position={[10, 10, 10]} intensity={0.8} />
         <pointLight position={[-10, -10, -10]} intensity={0.3} />
-        
+
         <MachineGLTFModel
           machine={machine}
           isExploded={isExploded}
@@ -406,7 +415,7 @@ export function MachineViewer3D({
           onComponentSelect={onComponentSelect}
           selectedComponent={selectedComponent}
         />
-        
+
         <OrbitControls
           enablePan={true}
           enableZoom={true}
@@ -424,7 +433,7 @@ export function MachineViewer3D({
 interface FleetModelProps {
   machines: Machine[]
   onMachineSelect?: (id: string) => void
-  predictions?: Record<string, {rul: number, status: Machine['status']}>
+  predictions?: Record<string, { rul: number, status: Machine['status'] }>
   isEditMode?: boolean
   onUpdateMachinePosition?: (id: string, location: { x: number; y: number }) => void
   onRemoveMachine?: (id: string) => void
@@ -575,24 +584,24 @@ function DraggableMachineModel({ machine, isDragging, isProblem, statusColor }: 
   const emissiveIntensity = isProblem ? 0.4 : (isDragging ? 0.3 : 0)
 
   return (
-    <Center 
+    <Center
       onCentered={({ container, width, height, depth }) => {
         const maxDim = Math.max(width, height, depth) || 1
         const scale = 1.2 / maxDim
         container.scale.set(scale, scale, scale)
       }}
     >
-      <Clone 
-        object={scene} 
+      <Clone
+        object={scene}
         inject={
-          <meshStandardMaterial 
-            color={isDragging ? '#60a5fa' : statusColor} 
-            metalness={0.5} 
-            roughness={0.4} 
+          <meshStandardMaterial
+            color={isDragging ? '#60a5fa' : statusColor}
+            metalness={0.5}
+            roughness={0.4}
             emissive={emissiveColor}
             emissiveIntensity={emissiveIntensity}
           />
-        } 
+        }
       />
     </Center>
   )
@@ -705,21 +714,21 @@ function DraggableMachine({
             <boxGeometry args={[1.2, 1.2, 1.2]} />
             <meshBasicMaterial transparent opacity={0} />
           </mesh>
-          
-          <DraggableMachineModel 
-            machine={machine} 
-            isDragging={isDragging} 
-            isProblem={isProblem} 
-            statusColor={statusColor} 
+
+          <DraggableMachineModel
+            machine={machine}
+            isDragging={isDragging}
+            isProblem={isProblem}
+            statusColor={statusColor}
           />
 
-          { (isDragging || isProblem) && (
+          {(isDragging || isProblem) && (
             <mesh>
               <boxGeometry args={[1.3, 1.3, 1.3]} />
-              <meshStandardMaterial 
-                color={isDragging ? '#60a5fa' : '#ef4444'} 
-                transparent 
-                opacity={0.3} 
+              <meshStandardMaterial
+                color={isDragging ? '#60a5fa' : '#ef4444'}
+                transparent
+                opacity={0.3}
                 emissive={isDragging ? '#1d4ed8' : '#ef4444'}
                 emissiveIntensity={0.5}
                 wireframe
@@ -752,8 +761,8 @@ function DraggableMachine({
             <div className="text-muted-foreground">
               RUL: <span className={
                 currentRul > 80 ? 'text-success' :
-                currentRul > 30 ? 'text-warning' :
-                'text-destructive'
+                  currentRul > 30 ? 'text-warning' :
+                    'text-destructive'
               }>{currentRul} Days</span>
             </div>
           </div>
@@ -786,7 +795,7 @@ interface MachineGLTFModelProps {
 
 function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelect, selectedComponent }: MachineGLTFModelProps) {
   const groupRef = useRef<THREE.Group>(null)
-  
+
   const modelUrl = useMemo(() => {
     if (machine.id === 'machine-1') return '/models/machine1.glb'
     if (machine.id === 'machine-2') return '/models/machine2.glb'
@@ -840,7 +849,7 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
       const size = box.getSize(new THREE.Vector3())
       const maxDim = Math.max(size.x, size.y, size.z) || 1
       const scale = 2.5 / maxDim
-      
+
       // Apply correct centered and scaled position
       scene.scale.set(scale, scale, scale)
       scene.position.set(
@@ -856,7 +865,7 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
     e.stopPropagation()
     if (!isExploded) setIsExploded(true)
     const clickedMeshName = e.object.name || ''
-    
+
     const matched = clickedMeshName ? machine.components.find(c => {
       const cName = c.name.toLowerCase()
       const clickName = clickedMeshName.toLowerCase()
@@ -954,8 +963,8 @@ function MachineGLTFModel({ machine, isExploded, setIsExploded, onComponentSelec
 
   return (
     <group ref={groupRef} position={[0, -0.5, 0]}>
-      <primitive 
-        object={scene} 
+      <primitive
+        object={scene}
         onClick={handleClick}
         onPointerOver={(e: any) => {
           e.stopPropagation()

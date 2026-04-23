@@ -134,7 +134,7 @@ export function InsightPanel({ activeSegment }: InsightPanelProps) {
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <div className={data.accentClass}>{data.icon}</div>
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+          <span className="text-xs font-medium text-muted-foreground dark:text-white uppercase tracking-wider">
             {data.title}
           </span>
         </div>

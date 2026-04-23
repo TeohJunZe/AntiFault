@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useTheme } from 'next-themes'
 import {
   mockMachines,
@@ -22,6 +22,7 @@ import { MachineViewer3D } from '@/components/machine-viewer-3d'
 import { SensorCharts } from '@/components/sensor-charts'
 import { RULGraph } from '@/components/rul-graph'
 import { XAIPanel } from '@/components/xai-panel'
+import { FineTunePanel } from '@/components/fine-tune-panel'
 import { MaintenancePlanner } from '@/components/maintenance-planner'
 import { SimulationPanel } from '@/components/simulation-panel'
 import { TechnologySuggestions } from '@/components/technology-suggestions'
@@ -50,13 +51,15 @@ import {
   BarChart3,
   Play,
   Lightbulb,
+  BrainCircuit,
   X,
   Box,
   Clock,
   Sun,
   Moon,
   Shield,
-  HardHat
+  HardHat,
+  AlertTriangle
 } from 'lucide-react'
 
 const LAYOUT_KEY = 'factoryFloorLayout'
@@ -67,14 +70,16 @@ export default function DigitalTwinDashboard() {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
   const [dashboardMode, setDashboardMode] = useState<'technician' | 'admin'>('technician')
-  const [machines, setMachines] = useState<Machine[]>(() => {
-    if (typeof window === 'undefined') return mockMachines
+  const isHydrated = useRef(false)
+  const [machines, setMachines] = useState<Machine[]>(mockMachines)
+
+  useEffect(() => {
     try {
       const saved = localStorage.getItem(LAYOUT_KEY)
-      if (saved) return JSON.parse(saved) as Machine[]
+      if (saved) setMachines(JSON.parse(saved) as Machine[])
     } catch { }
-    return mockMachines
-  })
+    isHydrated.current = true
+  }, [])
   const [tasks] = useState(mockMaintenanceTasks)
   const [hiddenAlertIds, setHiddenAlertIds] = useState<Set<string>>(new Set())
   const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<Set<string>>(new Set())
@@ -84,6 +89,7 @@ export default function DigitalTwinDashboard() {
   const [activeTab, setActiveTab] = useState('diagnostics')
   const [dashboardTab, setDashboardTab] = useState('fleet')
   const [statFilter, setStatFilter] = useState<'optimal' | 'impaired' | 'critical' | 'scheduled' | null>(null)
+  const [predictionRefreshToken, setPredictionRefreshToken] = useState(0)
 
   const [predictions, setPredictions] = useState<Record<string, { rul: number, status: Machine['status'] }>>({})
 
@@ -153,6 +159,7 @@ export default function DigitalTwinDashboard() {
 
   // Persist layout changes
   useEffect(() => {
+    if (!isHydrated.current) return
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(machines))
     } catch { }
@@ -205,6 +212,26 @@ export default function DigitalTwinDashboard() {
     ))
   }, [])
 
+  const handleFineTuneComplete = useCallback((machineId: string) => {
+    const clearStoredEntry = (storageKey: string) => {
+      try {
+        const raw = localStorage.getItem(storageKey)
+        if (!raw) return
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') {
+          delete parsed[machineId]
+          localStorage.setItem(storageKey, JSON.stringify(parsed))
+        }
+      } catch { }
+    }
+
+    clearStoredEntry('enginePredictions')
+    clearStoredEntry('engineExplainability')
+    clearStoredEntry('engineChangepoints')
+    setPredictionRefreshToken(token => token + 1)
+    window.dispatchEvent(new Event('predictionsUpdated'))
+  }, [])
+
   // Alert → Maintenance Tab navigation
   const [focusedMachineId, setFocusedMachineId] = useState<string | null>(null)
   const [focusedAlertMessage, setFocusedAlertMessage] = useState<string | null>(null)
@@ -226,12 +253,12 @@ export default function DigitalTwinDashboard() {
       setFocusedMachineId(activeContextData.id);
       setHUDVisible(false);
       setChatOpen(false);
-      
+
       // Allow the layout to shift before firing the event to auto-schedule
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('neo-auto-schedule', { detail: { machineId: activeContextData.id } }));
       }, 500);
-      
+
       // Clear the intent so it doesn't fire again
       setActiveUIModules(['SYSTEM_OVERVIEW']);
     }
@@ -259,11 +286,11 @@ export default function DigitalTwinDashboard() {
             )}
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 flex items-center justify-center overflow-hidden">
-                <Image 
-                  src="/transparent-logo.png" 
-                  alt="AntiFault Logo" 
-                  width={32} 
-                  height={32} 
+                <Image
+                  src="/transparent-logo.png"
+                  alt="AntiFault Logo"
+                  width={32}
+                  height={32}
                   className="object-contain"
                 />
               </div>
@@ -289,7 +316,7 @@ export default function DigitalTwinDashboard() {
                     'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200',
                     dashboardMode === 'technician'
                       ? 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-400 shadow-sm border border-cyan-500/30'
-                      : 'text-muted-foreground hover:text-foreground'
+                      : 'text-muted-foreground dark:text-white hover:text-foreground'
                   )}
                 >
                   <HardHat className="w-3.5 h-3.5" />
@@ -301,7 +328,7 @@ export default function DigitalTwinDashboard() {
                     'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200',
                     dashboardMode === 'admin'
                       ? 'bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 shadow-sm border border-indigo-500/30'
-                      : 'text-muted-foreground hover:text-foreground'
+                      : 'text-muted-foreground dark:text-white hover:text-foreground'
                   )}
                 >
                   <Shield className="w-3.5 h-3.5" />
@@ -312,6 +339,69 @@ export default function DigitalTwinDashboard() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* System Health Badge */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "flex items-center gap-2 px-3 h-10 rounded-xl border bg-card shadow-sm hover:bg-muted/50 transition-colors",
+                    globalHealth >= 80 ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400" :
+                    globalHealth >= 50 ? "border-amber-500/30 text-amber-600 dark:text-amber-400" :
+                    "border-red-500/30 text-red-600 dark:text-red-400"
+                  )}
+                >
+                  <Activity className="w-4 h-4" />
+                  <span className="font-bold">{Math.round(globalHealth)}%</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-4" align="end">
+                <h4 className="font-semibold text-sm mb-3 text-foreground">System Health</h4>
+                
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs text-muted-foreground">Overall Score</span>
+                  <span className={cn(
+                    "text-xl font-bold",
+                    globalHealth >= 80 ? "text-emerald-500" :
+                    globalHealth >= 50 ? "text-amber-500" : "text-red-500"
+                  )}>
+                    {Math.round(globalHealth)}%
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500" /> Optimal
+                    </span>
+                    <span className="font-medium">{activeMachines.filter(m => m.status === 'optimal').length}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                      <div className="w-2 h-2 rounded-full bg-amber-500" /> Impaired
+                    </span>
+                    <span className="font-medium">{activeMachines.filter(m => m.status === 'impaired').length}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                      <div className="w-2 h-2 rounded-full bg-red-500" /> Critical
+                    </span>
+                    <span className="font-medium">{activeMachines.filter(m => m.status === 'critical').length}</span>
+                  </div>
+                </div>
+                
+                {activeMachines.filter(m => m.status === 'critical').length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-border/50">
+                    <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3" />
+                      {activeMachines.filter(m => m.status === 'critical').length} Critical Machine{activeMachines.filter(m => m.status === 'critical').length > 1 ? 's' : ''}
+                    </div>
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
+
             {/* Dark/Light Mode Toggle */}
             <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -330,19 +420,6 @@ export default function DigitalTwinDashboard() {
               )}
             </button>
 
-            {/* Global Health */}
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-lg">
-              <Activity className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm">Fleet Health:</span>
-              <span className={cn(
-                'font-bold',
-                globalHealth >= 80 ? 'text-success' :
-                  globalHealth >= 60 ? 'text-warning' :
-                    'text-destructive'
-              )}>
-                {globalHealth}%
-              </span>
-            </div>
 
             {/* Alerts Popover */}
             <Popover>
@@ -351,8 +428,10 @@ export default function DigitalTwinDashboard() {
                   variant="ghost"
                   size="sm"
                   className={cn(
-                    'relative',
-                    criticalAlerts.length > 0 && 'text-destructive'
+                    'relative w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 border shadow-sm',
+                    criticalAlerts.length > 0 
+                      ? 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/20' 
+                      : 'bg-muted/50 border-border text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                   )}
                 >
                   <Bell className={cn(
@@ -379,7 +458,7 @@ export default function DigitalTwinDashboard() {
                   </h3>
                 </div>
                 <div className="max-h-[400px] p-2">
-                  <AlertPanel 
+                  <AlertPanel
                     alerts={alerts}
                     onAcknowledge={handleAcknowledgeAlert}
                     onDismiss={handleDismissAlert}
@@ -388,7 +467,7 @@ export default function DigitalTwinDashboard() {
                 </div>
                 {alerts.length > 0 && (
                   <div className="p-2 border-t border-border bg-muted/10 text-center">
-                    <button 
+                    <button
                       onClick={() => {
                         setAcknowledgedAlertIds(new Set([...acknowledgedAlertIds, ...alerts.map(a => a.id)]))
                       }}
@@ -685,6 +764,7 @@ export default function DigitalTwinDashboard() {
                       machine={selectedMachine}
                       onComponentSelect={setSelectedComponent}
                       selectedComponent={selectedComponent}
+                      refreshToken={predictionRefreshToken}
                     />
                   </CardContent>
                 </Card>
@@ -762,30 +842,37 @@ export default function DigitalTwinDashboard() {
 
               {/* Tabbed Content */}
               <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList className="grid grid-cols-4 w-full max-w-[600px]">
-                  <TabsTrigger 
-                    value="diagnostics" 
+                <TabsList className="grid grid-cols-5 w-full max-w-[760px]">
+                  <TabsTrigger
+                    value="diagnostics"
                     className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary"
                   >
                     <Activity className="w-4 h-4" />
                     <span className="hidden sm:inline">Diagnostics</span>
                   </TabsTrigger>
-                  <TabsTrigger 
-                    value="maintenance" 
+                  <TabsTrigger
+                    value="fine-tune"
+                    className="gap-2 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300"
+                  >
+                    <BrainCircuit className="w-4 h-4" />
+                    <span className="hidden sm:inline">Fine Tune</span>
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="maintenance"
                     className="gap-2 data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-500"
                   >
                     <Wrench className="w-4 h-4" />
                     <span className="hidden sm:inline">Maintenance</span>
                   </TabsTrigger>
-                  <TabsTrigger 
-                    value="simulation" 
+                  <TabsTrigger
+                    value="simulation"
                     className="gap-2 data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-500"
                   >
                     <Play className="w-4 h-4" />
                     <span className="hidden sm:inline">Simulation</span>
                   </TabsTrigger>
-                  <TabsTrigger 
-                    value="upgrades" 
+                  <TabsTrigger
+                    value="upgrades"
                     className="gap-2 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-400"
                   >
                     <Lightbulb className="w-4 h-4" />
@@ -821,6 +908,14 @@ export default function DigitalTwinDashboard() {
                       </CardContent>
                     </Card>
                   </div>
+                </TabsContent>
+
+                <TabsContent value="fine-tune" className="mt-6">
+                  <FineTunePanel
+                    machineId={selectedMachine.id}
+                    machineName={selectedMachine.name}
+                    onTuned={handleFineTuneComplete}
+                  />
                 </TabsContent>
 
                 <TabsContent value="maintenance" className="mt-6">

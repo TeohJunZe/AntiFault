@@ -33,6 +33,7 @@ import {
 import { FilterBar, DateRange, ComparisonMode } from './filter-bar'
 import { MaintenanceDonut } from './maintenance-donut'
 import { InsightPanel, SegmentName } from './insight-panel'
+import { CostTrendChart } from './cost-trend-chart'
 import { parseDocument, type ParsedOrderData, type ParsedOrderRow } from '@/lib/document-parser'
 
 interface AdminDashboardProps {
@@ -167,6 +168,9 @@ export function AdminDashboard({ machines }: AdminDashboardProps) {
         <InsightPanel activeSegment={activeSegment} />
       </div>
 
+      {/* ─── 3. COST & SAVINGS TREND ─── */}
+      <CostTrendChart />
+
       {/* ─── 4. AI ORDER DECISION ENGINE ─── */}
       <section>
         <h2 className="text-base font-semibold text-foreground flex items-center gap-2 mb-4">
@@ -186,14 +190,6 @@ export function AdminDashboard({ machines }: AdminDashboardProps) {
                     <label className="text-xs font-medium text-muted-foreground">
                       Upload Order Document
                     </label>
-                    <a
-                      href="/sample-order.csv"
-                      download
-                      className="flex items-center gap-1 text-[10px] text-teal-600 dark:text-teal-400 hover:underline"
-                    >
-                      <Download className="w-3 h-3" />
-                      Sample CSV
-                    </a>
                   </div>
                   {!uploadedFile ? (
                     <button
@@ -372,7 +368,7 @@ export function AdminDashboard({ machines }: AdminDashboardProps) {
                 <Button
                   onClick={handleAnalyzeOrder}
                   disabled={isAnalyzing || !orderForm.quantity || !orderForm.deadline || !orderForm.productType}
-                  className="w-full gap-2 h-10 text-sm font-semibold bg-teal-600 hover:bg-teal-500 text-white border-0"
+                  className="w-full gap-2 h-10 text-sm font-semibold bg-primary hover:bg-primary/90 text-primary-foreground border-0"
                 >
                   {isAnalyzing ? (
                     <>
@@ -406,29 +402,29 @@ export function AdminDashboard({ machines }: AdminDashboardProps) {
             <div className="space-y-3">
               {/* Decision Badge */}
               <Card className={cn(
-                'shadow-sm border-l-4',
+                'shadow-sm border-l-4 bg-card',
                 analysisResult.decision === 'Accept'
-                  ? 'border-l-teal-500 bg-teal-50 dark:bg-teal-500/5 border-teal-200 dark:border-teal-500/20'
+                  ? 'border-l-emerald-500 border-border/50'
                   : analysisResult.decision === 'Caution'
-                    ? 'border-l-amber-500 bg-amber-50 dark:bg-amber-500/5 border-amber-200 dark:border-amber-500/20'
-                    : 'border-l-red-500 bg-red-50 dark:bg-red-500/5 border-red-200 dark:border-red-500/20'
+                    ? 'border-l-amber-500 border-border/50'
+                    : 'border-l-red-500 border-border/50'
               )}>
                 <CardContent className="pt-4 pb-4">
                   <div className="flex items-center gap-3">
                     <div className={cn(
-                      'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0',
+                      'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-muted/50',
                       analysisResult.decision === 'Accept'
-                        ? 'bg-teal-100 dark:bg-teal-500/15'
+                        ? 'text-emerald-600 dark:text-emerald-400'
                         : analysisResult.decision === 'Caution'
-                          ? 'bg-amber-100 dark:bg-amber-500/15'
-                          : 'bg-red-100 dark:bg-red-500/15'
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-red-600 dark:text-red-400'
                     )}>
                       {analysisResult.decision === 'Accept' ? (
-                        <ShieldCheck className="w-10 h-10 text-teal-600 dark:text-teal-400" />
+                        <ShieldCheck className="w-6 h-6" />
                       ) : analysisResult.decision === 'Caution' ? (
-                        <ShieldAlert className="w-10 h-10 text-amber-600 dark:text-amber-400" />
+                        <ShieldAlert className="w-6 h-6" />
                       ) : (
-                        <ShieldX className="w-10 h-10 text-red-600 dark:text-red-400" />
+                        <ShieldX className="w-6 h-6" />
                       )}
                     </div>
                     <div>
