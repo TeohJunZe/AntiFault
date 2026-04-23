@@ -8,7 +8,7 @@ export async function POST(req: Request) {
     // This avoids CORS issues and keeps the API key hidden from the browser
     const rawKey = process.env.OLLAMA_API_KEY;
     const apiKey = rawKey === 'your_api_key_goes_here' ? undefined : rawKey;
-    const defaultUrl = apiKey ? 'https://ollama.com' : 'http://localhost:11434';
+    const defaultUrl = apiKey ? 'https://api.ollama.com' : 'http://localhost:11434';
     const baseUrl = process.env.OLLAMA_URL || defaultUrl;
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
