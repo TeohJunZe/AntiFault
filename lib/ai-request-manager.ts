@@ -125,7 +125,7 @@ async function callOllamaStream(model: string, prompt: string, onToken: (token: 
     let timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for stream
 
     try {
-        const response = await fetch("http://localhost:11434/api/generate", {
+        const response = await fetch("/api/neo", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -212,7 +212,7 @@ export async function streamNeoRequest(
         onToken(token);
     };
 
-    // Priority 1: llama2
+    // Priority 1: llama2 (works locally if downloaded)
     try {
         console.log("[AI Manager] Streaming llama2...");
         await callOllamaStream("llama2", prompt, handleToken);
@@ -220,17 +220,23 @@ export async function streamNeoRequest(
     } catch (err: any) {
         console.warn("[AI Manager] llama2 stream failed:", err.message);
         
-        // Priority 2: gemma3 (fallback)
+        // Priority 2: gemma3:4b (works on Ollama Cloud)
         try {
-            console.log("[AI Manager] Streaming gemma3 (fallback)...");
+            console.log("[AI Manager] Streaming gemma3:4b (fallback)...");
             fullResponse = ""; // reset accumulated text
-            await callOllamaStream("gemma3:latest", prompt, handleToken);
-            console.log("[AI Manager] ✅ gemma3 stream finished");
+            await callOllamaStream("gemma3:4b", prompt, handleToken);
+            console.log("[AI Manager] ✅ gemma3:4b stream finished");
         } catch (err2: any) {
-            console.warn("[AI Manager] gemma3 stream failed:", err2.message);
-            // Last resort: simulation
-            const fallbackMsg = "I'm having trouble connecting to my local AI right now. Please make sure Ollama is running.";
-            fallbackMsg.split(/(?<=\s+)/).forEach(w => handleToken(w));
+            console.warn("[AI Manager] gemma3:4b stream failed:", err2.message);
+            // Last resort: show exact error
+            const fallbackMsg = `[Connection Error] Could not reach the AI models. Details: ${err2.message}. Please verify your API key and model availability.`;
+            
+            // Output fallback word by word to simulate streaming
+            const words = fallbackMsg.split(" ");
+            for (let i = 0; i < words.length; i++) {
+                handleToken(words[i] + " ");
+                await new Promise(r => setTimeout(r, 50));
+            }
         }
     }
 
