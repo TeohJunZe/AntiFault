@@ -1,4 +1,4 @@
-﻿/**
+/**
  * AI Request Manager — Local Ollama
  * 
  * All Neo AI calls go through this manager.
@@ -66,19 +66,10 @@ function buildPrompt(
     machineData: any[],
     conversationHistory: { role: string; content: string }[]
 ): string {
-    // Compress to key fields only to avoid llama2 context overflow (Ollama 500 errors)
-    const compressedData = machineData.map(m => ({
-        name: m.name,
-        status: m.status,
-        health: m.healthScore ?? m.health,
-        temp: m.temperature ?? m.sensors?.temperature,
-        vibration: m.vibration ?? m.sensors?.vibration,
-        alerts: m.alerts?.length ?? 0,
-    }));
-    const machineDataStr = JSON.stringify(compressedData);
+    const machineDataStr = JSON.stringify(machineData, null, 2);
 
     // Build conversation memory (last 10 messages)
-    const recentHistory = conversationHistory.slice(-6);
+    const recentHistory = conversationHistory.slice(-10);
     const memoryLines = recentHistory.map(msg =>
         msg.role === "user" ? `User: ${msg.content}` : `Neo: ${msg.content}`
     );
